@@ -1,5 +1,5 @@
 import type { Board, Color } from '../../chess/types';
-import { ARROW_COLOR, ARROW_SW, GLYPH, HEAD_HALF, HEAD_LEN, SQ } from './constants';
+import { ARROW_COLOR, ARROW_SW, HEAD_HALF, HEAD_LEN, SQ } from './constants';
 
 interface ChessBoardProps {
   board: Board;
@@ -52,10 +52,17 @@ export function ChessBoard({
               : isLastMove
                 ? light ? '#cdd26a' : '#aaa23a'
                 : light ? '#f0d9b5' : '#b58863';
+            const canGrab = piece && isHumanTurn && piece.color === playerColor;
             return (
               <div
                 key={c}
-                style={{ width: SQ, height: SQ, backgroundColor: bg, position: 'relative' }}
+                style={{
+                  width: SQ,
+                  height: SQ,
+                  backgroundColor: bg,
+                  position: 'relative',
+                  cursor: canGrab ? 'grab' : 'default'
+                }}
                 className="flex items-center justify-center"
                 onClick={() => onClick(dr, dc)}
                 onPointerDown={(e) => onPointerDown(e, dr, dc)}
@@ -67,20 +74,15 @@ export function ChessBoard({
                   <div className="absolute inset-0 ring-4 ring-inset ring-black/40 pointer-events-none" />
                 )}
                 {piece && !isDragged && (
-                  <span
+                  <img
+                    src={`/pieces/${piece.color}${piece.type}.svg`}
+                    alt={`${piece.color === 'w' ? 'White' : 'Black'} ${piece.type}`}
                     style={{
-                      fontSize: 52, lineHeight: 1,
-                      color: piece.color === 'w' ? '#f0e8d0' : '#180f00',
-                      filter:
-                        piece.color === 'w'
-                          ? 'drop-shadow(0 1px 2px rgba(0,0,0,0.9)) drop-shadow(0 0 1px rgba(0,0,0,0.6))'
-                          : 'drop-shadow(0 1px 1px rgba(200,150,60,0.5))',
-                      cursor: isHumanTurn && piece.color === playerColor ? 'grab' : 'default',
+                      width: '86%',
+                      height: '86%',
                       pointerEvents: 'none',
                     }}
-                  >
-                    {GLYPH[piece.color + piece.type]}
-                  </span>
+                  />
                 )}
               </div>
             );

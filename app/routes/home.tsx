@@ -24,7 +24,7 @@ import { LevelSelector } from "../components/chess/LevelSelector";
 import { MoveHistory } from "../components/chess/MoveHistory";
 import { Scoreboard } from "../components/chess/Scoreboard";
 import { SetupScreen } from "../components/chess/SetupScreen";
-import { GLYPH, LEVELS, SQ } from "../components/chess/constants";
+import { LEVELS, SQ } from "../components/chess/constants";
 
 interface GameState {
   board: Board;
@@ -623,19 +623,15 @@ export default function Home() {
                 justifyContent: "center",
               }}
             >
-              <span
+              <img
+                src={`/pieces/${piece.color}${piece.type}.svg`}
+                alt={`${piece.color === 'w' ? 'White' : 'Black'} ${piece.type}`}
                 style={{
-                  fontSize: 56,
-                  lineHeight: 1,
-                  color: piece.color === "w" ? "#f0e8d0" : "#180f00",
-                  filter:
-                    piece.color === "w"
-                      ? "drop-shadow(0 2px 4px rgba(0,0,0,0.9))"
-                      : "drop-shadow(0 2px 3px rgba(200,150,60,0.6))",
+                  width: '86%',
+                  height: '86%',
+                  pointerEvents: 'none',
                 }}
-              >
-                {GLYPH[piece.color + piece.type]}
-              </span>
+              />
             </div>
           ) : null;
         })()}

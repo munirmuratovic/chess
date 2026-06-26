@@ -2,11 +2,6 @@ import type { Level } from '../../chess/types';
 
 export const SQ = 73;
 
-export const VS = '︎';
-export const GLYPH: Record<string, string> = {
-  wK: `♚${VS}`, wQ: `♛${VS}`, wR: `♜${VS}`, wB: `♝${VS}`, wN: `♞${VS}`, wP: `♟${VS}`,
-  bK: `♚${VS}`, bQ: `♛${VS}`, bR: `♜${VS}`, bB: `♝${VS}`, bN: `♞${VS}`, bP: `♟${VS}`,
-};
 
 export const LEVELS: Level[] = [
   { label: 'Easy',        depth: 1 },
