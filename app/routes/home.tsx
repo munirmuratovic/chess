@@ -8,8 +8,8 @@ import {
 } from "../chess/board";
 import { gameStatus, legalMoves } from "../chess/moves";
 import { materialEval } from "../chess/eval";
-import { getAiMove } from "../chess/search";
-import { toPGN, toSAN } from "../chess/notation";
+import { getAiMove, ttClear } from "../chess/search";
+import { toPGN, toSAN, replayPGN } from "../chess/notation";
 import type {
   Board,
   Castling,
@@ -114,6 +114,7 @@ export default function Home() {
   const [levelIdxW, setLevelIdxW] = useState(2);
   const [levelIdxB, setLevelIdxB] = useState(2);
   const [score, setScore] = useState<Score>({ white: 0, black: 0, draws: 0 });
+  const [boardFlipped, setBoardFlipped] = useState(false);
 
   const [state, setState] = useState<GameState>(freshState);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -131,7 +132,7 @@ export default function Home() {
       ? initialBoard()
       : history[viewIdx].board;
 
-  const flipBoard = gameMode === "pvai" && playerColor === "b";
+  const flipBoard = boardFlipped;
   // Only allow human moves when live and it's their turn
   const isHumanTurn =
     isLive &&
@@ -428,6 +429,37 @@ export default function Home() {
   const displayHighlights = isLive ? state.highlights : [];
   const displayLastMoveFinal = isLive ? state.lastMove : null;
 
+  const handleImportPGN = (pgn: string): string | null => {
+    const result = replayPGN(pgn);
+    if (result.error) {
+      return result.error;
+    }
+
+    ttClear();
+    gameCounted.current = false;
+    
+    const finalStatus = gameStatus(result.board, result.turn, result.castling, result.enPassant);
+    const finalEval = materialEval(result.board);
+
+    setState({
+      board: result.board,
+      castling: result.castling,
+      enPassant: result.enPassant,
+      turn: result.turn,
+      selected: null,
+      highlights: [],
+      lastMove: null,
+      status: finalStatus,
+      thinking: false,
+      evalScore: finalEval,
+    });
+    setHistory(result.history);
+    setViewIdx(result.history.length - 1);
+    setBoardFlipped(gameMode === "pvai" && playerColor === "b");
+    setGameStarted(true);
+    return null;
+  };
+
   if (!gameStarted) {
     return (
       <SetupScreen
@@ -440,12 +472,15 @@ export default function Home() {
         levelIdxB={levelIdxB}
         setLevelIdxB={setLevelIdxB}
         onStart={() => {
+          ttClear();
           gameCounted.current = false;
           setState(freshState());
           setHistory([]);
           setViewIdx(-1);
+          setBoardFlipped(gameMode === "pvai" && playerColor === "b");
           setGameStarted(true);
         }}
+        onImportPGN={handleImportPGN}
       />
     );
   }
@@ -588,20 +623,28 @@ export default function Home() {
         ) : null}
       </div>
 
-      <button
-        onClick={() => {
-          setState(freshState());
-          setHistory([]);
-          setViewIdx(-1);
-          setDrag(null);
-          setArrows([]);
-          setCircles([]);
-          setGameStarted(false);
-        }}
-        className="px-6 py-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-white font-semibold rounded-lg transition-colors text-sm"
-      >
-        New Game
-      </button>
+      <div className="flex gap-3">
+        <button
+          onClick={() => setBoardFlipped(f => !f)}
+          className="px-6 py-2 bg-gray-800 hover:bg-gray-700 active:bg-gray-900 border border-gray-700 text-white font-semibold rounded-lg transition-colors text-sm flex items-center gap-1.5"
+        >
+          🔄 Flip Board
+        </button>
+        <button
+          onClick={() => {
+            setState(freshState());
+            setHistory([]);
+            setViewIdx(-1);
+            setDrag(null);
+            setArrows([]);
+            setCircles([]);
+            setGameStarted(false);
+          }}
+          className="px-6 py-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-white font-semibold rounded-lg transition-colors text-sm"
+        >
+          New Game
+        </button>
+      </div>
 
       {/* Floating drag piece */}
       {drag &&

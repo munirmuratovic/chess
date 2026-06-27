@@ -52,14 +52,16 @@ function histIdx(m: Move): number {
 
 // ─── Move scoring: captures > killers > history ───────────────────────────────
 
-function moveScore(board: Board, m: Move, ply: number): number {
+function moveScore(board: Board, m: Move, ply: number, ttMoveCode: number): number {
+  const code = encMove(m);
+  if (code === ttMoveCode) return 30_000;
   if (board[m.to[0]][m.to[1]]) return 20_000 + captureScore(board, m);
   if (isKiller(m, ply)) return 10_000;
   return histTable[histIdx(m)];
 }
 
-function sortMoves(board: Board, moves: Move[], ply: number): void {
-  moves.sort((a, b) => moveScore(board, b, ply) - moveScore(board, a, ply));
+function sortMoves(board: Board, moves: Move[], ply: number, ttMoveCode: number): void {
+  moves.sort((a, b) => moveScore(board, b, ply, ttMoveCode) - moveScore(board, a, ply, ttMoveCode));
 }
 
 // ─── Zobrist hashing ─────────────────────────────────────────────────────────
@@ -109,15 +111,17 @@ function boardHash(board: Board, maximizing: boolean): number {
 // Replaces Map<number, TTEntry>: ~10× less memory, no GC, O(1) with bitmask.
 // flag: 0=exact  1=lower bound (failed high)  2=upper bound (failed low)
 
-const TT_SIZE = 1 << 18; // 262 144 slots ≈ 2.5 MB total
+const TT_SIZE = 1 << 19; // 524 288 slots ≈ 5 MB total
 const TT_MASK = TT_SIZE - 1;
 const tt_key = new Uint32Array(TT_SIZE); // 0 means empty
 const tt_depth = new Int8Array(TT_SIZE);
 const tt_score = new Int32Array(TT_SIZE); // score × 1000 stored as int
 const tt_flag = new Uint8Array(TT_SIZE);
+const tt_move = new Uint16Array(TT_SIZE); // encoded best move
 
-function ttClear(): void {
+export function ttClear(): void {
   tt_key.fill(0);
+  tt_move.fill(0);
 }
 
 function ttProbe(
@@ -137,11 +141,18 @@ function ttProbe(
   return null;
 }
 
+function ttProbeMove(hash: number): number {
+  if (!hash) return 0;
+  const i = hash & TT_MASK;
+  return tt_key[i] === hash ? tt_move[i] : 0;
+}
+
 function ttStore(
   hash: number,
   depth: number,
   score: number,
   flag: 0 | 1 | 2,
+  moveCode: number,
 ): void {
   if (!hash) return;
   const i = hash & TT_MASK;
@@ -151,6 +162,7 @@ function ttStore(
   tt_depth[i] = depth;
   tt_score[i] = Math.round(score * 1000);
   tt_flag[i] = flag;
+  tt_move[i] = moveCode;
 }
 
 // ─── Quiescence search ────────────────────────────────────────────────────────
@@ -247,11 +259,13 @@ function minimax(
   const moves = allLegalMoves(board, color, castling, enPassant);
   if (moves.length === 0) return inCheck ? (maximizing ? -9999 : 9999) : 0;
 
-  sortMoves(board, moves, ply);
+  const ttMoveCode = ttProbeMove(hash);
+  sortMoves(board, moves, ply, ttMoveCode);
 
   const origAlpha = alpha,
     origBeta = beta;
   let best = maximizing ? -Infinity : Infinity;
+  let bestMove: Move | null = null;
 
   for (let i = 0; i < moves.length; i++) {
     const m = moves[i];
@@ -291,10 +305,16 @@ function minimax(
       );
 
     if (maximizing) {
-      if (score > best) best = score;
+      if (score > best) {
+        best = score;
+        bestMove = m;
+      }
       if (best > alpha) alpha = best;
     } else {
-      if (score < best) best = score;
+      if (score < best) {
+        best = score;
+        bestMove = m;
+      }
       if (best < beta) beta = best;
     }
 
@@ -309,7 +329,8 @@ function minimax(
     }
   }
 
-  ttStore(hash, depth, best, best <= origAlpha ? 2 : best >= origBeta ? 1 : 0);
+  const bestMoveCode = bestMove ? encMove(bestMove) : 0;
+  ttStore(hash, depth, best, best <= origAlpha ? 2 : best >= origBeta ? 1 : 0, bestMoveCode);
   return best;
 }
 
@@ -322,7 +343,6 @@ export function getAiMove(
   depth = 3,
   enPassant: [number, number] | null = null,
 ): Move | null {
-  ttClear();
   killers.fill(0);
   histTable.fill(0);
 
@@ -385,6 +405,9 @@ export function getAiMove(
 
     prevScore = dBest;
     bestMove = dBestMove;
+
+    const hash = boardHash(board, maximizing);
+    ttStore(hash, d, prevScore, 0, encMove(bestMove));
 
     // Re-sort root moves for next depth using this iteration's scores
     const indexed = moves.map((m, i) => ({ m, s: scores[i] }));

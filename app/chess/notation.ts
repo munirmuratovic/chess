@@ -1,6 +1,7 @@
-import { applyMove, updateCastling, updateEnPassant } from './board';
-import { allLegalMoves, isInCheck, legalMoves } from './moves';
-import type { Board, Castling, Color, GameMode } from './types';
+import { applyMove, updateCastling, updateEnPassant, initialBoard, defaultCastling } from './board';
+import { allLegalMoves, isInCheck, legalMoves, gameStatus } from './moves';
+import type { Board, Castling, Color, GameMode, HistoryEntry } from './types';
+import { materialEval } from './eval';
 
 const FILES = 'abcdefgh';
 
@@ -93,4 +94,126 @@ export function toPGN(sans: string[], meta: PGNMeta): string {
   }
 
   return header + '\n\n' + moves.join(' ') + ' ' + meta.result;
+}
+
+export interface ReplayedGame {
+  board: Board;
+  castling: Castling;
+  enPassant: [number, number] | null;
+  turn: Color;
+  history: HistoryEntry[];
+  error?: string;
+}
+
+function norm(san: string): string {
+  let s = san.toUpperCase()
+    .replace(/0-0-0/g, 'O-O-O')
+    .replace(/0-0/g, 'O-O')
+    .replace(/E\.P\./g, '')
+    .replace(/EP/g, '');
+  s = s.replace(/[^A-Z0-9\-]/g, '');
+  return s;
+}
+
+export function replayPGN(pgn: string): ReplayedGame {
+  // Remove headers
+  let moveText = pgn.replace(/\[[^\]]*\]/g, ' ');
+  // Remove comments and RAVs
+  moveText = moveText
+    .replace(/\{[^\}]*\}/g, ' ')
+    .replace(/;.*$/gm, ' ')
+    .replace(/\([^\)]*\)/g, ' ');
+  
+  // Replace move numbers with spaces
+  moveText = moveText.replace(/(\d+)\s*\.+\s*/g, ' ');
+  
+  // Split into tokens
+  const tokens = moveText.replace(/\s+/g, ' ').trim().split(' ');
+  const cleanTokens = tokens.filter(t => {
+    if (!t) return false;
+    // Remove game result
+    if (/^(1-0|0-1|1\/2-1\/2|\*)$/.test(t)) return false;
+    return true;
+  });
+
+  // Replay starting position
+  let board = initialBoard();
+  let castling = defaultCastling();
+  let enPassant: [number, number] | null = null;
+  let turn: Color = 'w';
+  const history: HistoryEntry[] = [];
+
+  for (let i = 0; i < cleanTokens.length; i++) {
+    const token = cleanTokens[i];
+    const normalizedToken = norm(token);
+
+    // Find the legal move that matches
+    const moves = allLegalMoves(board, turn, castling, enPassant);
+    let matchedMove = null;
+    let matchedSan = '';
+
+    for (const m of moves) {
+      const san = toSAN(board, m.from, m.to, castling, enPassant);
+      if (norm(san) === normalizedToken) {
+        matchedMove = m;
+        matchedSan = san;
+        break;
+      }
+    }
+
+    // Try a looser match if strict fails (e.g. sometimes PGN has promotion missing or check missing)
+    if (!matchedMove) {
+      for (const m of moves) {
+        const san = toSAN(board, m.from, m.to, castling, enPassant);
+        const nSan = norm(san);
+        if (nSan.startsWith(normalizedToken) || normalizedToken.startsWith(nSan)) {
+          matchedMove = m;
+          matchedSan = san;
+          break;
+        }
+      }
+    }
+
+    if (!matchedMove) {
+      return {
+        board,
+        castling,
+        enPassant,
+        turn,
+        history,
+        error: `Could not parse move ${i + 1}: "${token}"`
+      };
+    }
+
+    // Apply the move
+    const nextBoard = applyMove(board, matchedMove.from, matchedMove.to);
+    const nextCastling = updateCastling(castling, matchedMove.from, matchedMove.to);
+    const nextEnPassant = updateEnPassant(board, matchedMove.from, matchedMove.to);
+    const nextTurn: Color = turn === 'w' ? 'b' : 'w';
+    const nextStatus = gameStatus(nextBoard, nextTurn, nextCastling, nextEnPassant);
+    const nextEval = materialEval(nextBoard);
+
+    board = nextBoard;
+    castling = nextCastling;
+    enPassant = nextEnPassant;
+    turn = nextTurn;
+
+    history.push({
+      san: matchedSan,
+      board,
+      castling,
+      enPassant,
+      evalScore: nextEval,
+      turn,
+      status: nextStatus
+    });
+  }
+
+  return {
+    board,
+    castling,
+    enPassant,
+    turn,
+    history
+  };
 }

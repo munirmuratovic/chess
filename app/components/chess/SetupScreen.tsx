@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Color, GameMode } from '../../chess/types';
 import { LevelSelector } from './LevelSelector';
 
@@ -11,6 +12,7 @@ interface SetupScreenProps {
   levelIdxB: number;
   setLevelIdxB: (i: number) => void;
   onStart: () => void;
+  onImportPGN: (pgn: string) => string | null;
 }
 
 export function SetupScreen({
@@ -19,7 +21,12 @@ export function SetupScreen({
   levelIdxW, setLevelIdxW,
   levelIdxB, setLevelIdxB,
   onStart,
+  onImportPGN,
 }: SetupScreenProps) {
+  const [showPgnInput, setShowPgnInput] = useState(false);
+  const [pgnInput, setPgnInput] = useState('');
+  const [pgnError, setPgnError] = useState<string | null>(null);
+
   const aiIsBlack = gameMode === 'pvai' && playerColor === 'w';
   const aiIsWhite = gameMode === 'pvai' && playerColor === 'b';
 
@@ -91,6 +98,53 @@ export function SetupScreen({
         ) : aiIsWhite ? (
           <LevelSelector label="Computer" levelIdx={levelIdxW} setLevelIdx={setLevelIdxW} />
         ) : null}
+      </div>
+
+      {/* Optional PGN Paste */}
+      <div className="flex flex-col items-center gap-3 w-full max-w-sm">
+        <button
+          onClick={() => {
+            setShowPgnInput(s => !s);
+            setPgnError(null);
+          }}
+          className="text-amber-500 hover:text-amber-400 text-xs font-semibold transition-colors flex items-center gap-1"
+        >
+          📂 {showPgnInput ? "Hide Import PGN" : "Import Game from PGN"}
+        </button>
+
+        {showPgnInput && (
+          <div className="w-full flex flex-col gap-2 bg-gray-900 border border-gray-800 rounded-xl p-3">
+            <textarea
+              value={pgnInput}
+              onChange={(e) => {
+                setPgnInput(e.target.value);
+                setPgnError(null);
+              }}
+              placeholder="Paste PGN here (e.g. 1. e4 e5 2. Nf3 ...)"
+              className="w-full h-20 bg-gray-950 border border-gray-700 rounded-lg p-2 text-xs text-gray-200 font-mono focus:border-amber-500 focus:outline-none resize-none"
+            />
+            {pgnError && (
+              <span className="text-red-500 text-xs text-center font-medium">
+                {pgnError}
+              </span>
+            )}
+            <button
+              onClick={() => {
+                if (!pgnInput.trim()) {
+                  setPgnError("Please paste a PGN string");
+                  return;
+                }
+                const err = onImportPGN(pgnInput);
+                if (err) {
+                  setPgnError(err);
+                }
+              }}
+              className="w-full py-1.5 bg-amber-700 hover:bg-amber-600 active:bg-amber-800 text-white font-bold rounded-lg text-xs transition-colors shadow-md"
+            >
+              Import & Start Game
+            </button>
+          </div>
+        )}
       </div>
 
       <button
