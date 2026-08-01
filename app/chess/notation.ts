@@ -200,6 +200,7 @@ export function replayPGN(pgn: string): ReplayedGame {
 
     history.push({
       san: matchedSan,
+      move: { from: matchedMove.from, to: matchedMove.to },
       board,
       castling,
       enPassant,

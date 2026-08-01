@@ -8,8 +8,10 @@ import {
 } from "../chess/board";
 import { gameStatus, legalMoves } from "../chess/moves";
 import { materialEval } from "../chess/eval";
-import { getAiMove, ttClear } from "../chess/search";
 import { toPGN, toSAN, replayPGN } from "../chess/notation";
+import { createAiClient, type AiClient } from "../chess/aiClient";
+import type { AiMoveScore } from "../chess/search";
+import { classifyMove, type MoveAnnotation } from "../chess/annotate";
 import type {
   Board,
   Castling,
@@ -17,6 +19,7 @@ import type {
   GameMode,
   GameStatus,
   HistoryEntry,
+  Move,
   Score,
 } from "../chess/types";
 import { ChessBoard } from "../components/chess/ChessBoard";
@@ -83,6 +86,7 @@ function applyGameMove(
 
   const entry: HistoryEntry = {
     san,
+    move: { from, to },
     board: nb,
     castling: nc,
     enPassant: ne,
@@ -103,6 +107,72 @@ function resultFromStatus(
   return "*";
 }
 
+function sameMove(a: Move, b: Move): boolean {
+  return a.from[0] === b.from[0] && a.from[1] === b.from[1] && a.to[0] === b.to[0] && a.to[1] === b.to[1];
+}
+
+// Fixed strength used for ALL move-quality grading (Brilliant/Best/Blunder/…),
+// deliberately independent of whatever difficulty the game itself is set to.
+// If grading used the configured play level, an Easy (depth 1) game would
+// call almost anything "Best" — the bar has to be the same regardless of who
+// (or what level) is actually playing, or the badges mean nothing.
+const ANALYSIS_LEVEL = { depth: 8, maxTimeMs: 2000 };
+
+// Grades `played` against the engine's own analysis of the position it was
+// played from (bestMove/bestEvalWhite/moveScores, from a "getMove" search).
+// If `played` isn't the engine's top pick, this needs one extra exact search
+// (evaluateMove) to score it — getMove()'s per-move scores are too imprecise
+// for that (see AiMoveScore). Always graded at ANALYSIS_LEVEL, never at the
+// mover's own (possibly much weaker or stronger) configured play level.
+async function gradeMove(
+  client: AiClient,
+  preBoard: Board,
+  mover: Color,
+  preCastling: Castling,
+  preEnPassant: [number, number] | null,
+  played: Move,
+  bestMove: Move,
+  bestEvalWhite: number,
+  moveScores: AiMoveScore[],
+): Promise<MoveAnnotation | null> {
+  const isTop = sameMove(played, bestMove);
+
+  let actualEvalWhite = bestEvalWhite;
+  if (!isTop) {
+    const res = await client.send({
+      type: "evaluateMove",
+      board: preBoard,
+      color: mover,
+      castling: preCastling,
+      move: played,
+      depth: ANALYSIS_LEVEL.depth,
+      enPassant: preEnPassant,
+      timeLimitMs: ANALYSIS_LEVEL.maxTimeMs,
+    });
+    if (res.type !== "moveEval") return null;
+    actualEvalWhite = res.score;
+  }
+
+  const sign = mover === "w" ? 1 : -1;
+  let secondBestMoverEval = -Infinity;
+  for (const m of moveScores) {
+    if (sameMove(m, bestMove)) continue;
+    const moverEval = m.score * sign;
+    if (moverEval > secondBestMoverEval) secondBestMoverEval = moverEval;
+  }
+  const secondBestEvalWhite = secondBestMoverEval === -Infinity ? undefined : secondBestMoverEval * sign;
+
+  return classifyMove({
+    board: preBoard,
+    color: mover,
+    move: played,
+    bestMove,
+    bestEvalWhite,
+    actualEvalWhite,
+    secondBestEvalWhite,
+  });
+}
+
 export function meta() {
   return [{ title: "Chess" }];
 }
@@ -120,6 +190,15 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   // viewIdx: index into history (-1 = start position, history.length-1 = live)
   const [viewIdx, setViewIdx] = useState(-1);
+  // Move-quality badges (Brilliant/Best/Blunder/…), parallel to `history`;
+  // null until the background analysis for that move resolves.
+  const [annotations, setAnnotations] = useState<(MoveAnnotation | null)[]>([]);
+  const historyLenRef = useRef(0);
+  historyLenRef.current = history.length;
+  // Bumped on every full reset (new game / PGN import) so any in-flight
+  // analysis from a previous game can recognize it's stale and bail out
+  // instead of writing its result into the new game's annotations.
+  const analysisGenerationRef = useRef(0);
 
   const { turn, selected, status, thinking } = state;
   const isOver = status === "checkmate" || status === "stalemate";
@@ -188,33 +267,190 @@ export default function Home() {
     });
   }, [isOver, gameStarted, status, turn]);
 
-  // AI move effect
+  // AI search runs off the main thread so deep (Grandmaster) searches can't
+  // freeze the page or block input while thinking.
+  const aiClientRef = useRef<AiClient | null>(null);
+  useEffect(() => {
+    const worker = new Worker(new URL("../chess/ai.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    const client = createAiClient(worker);
+    aiClientRef.current = client;
+    return () => {
+      client.dispose();
+      worker.terminate();
+      aiClientRef.current = null;
+    };
+  }, []);
+
+  // Background "what's the best move here, and how good is it" analysis for
+  // whichever position is currently live — this doubles as the AI's own move
+  // search (below) and as the baseline used to grade whatever move actually
+  // gets played (further below), chess.com-style.
+  interface Analysis {
+    atHistoryLen: number;
+    promise: Promise<{ bestMove: Move | null; bestEvalWhite: number; moveScores: AiMoveScore[] }>;
+  }
+  const pendingAnalysisRef = useRef<Analysis | null>(null);
+
+  useEffect(() => {
+    if (!gameStarted || isOver || !isLive) return;
+    const client = aiClientRef.current;
+    if (!client) return;
+    const s = stateRef.current;
+    const promise = client
+      .send({
+        type: "getMove",
+        board: s.board,
+        color: turn,
+        castling: s.castling,
+        depth: ANALYSIS_LEVEL.depth,
+        enPassant: s.enPassant,
+        timeLimitMs: ANALYSIS_LEVEL.maxTimeMs,
+      })
+      .then((res) => {
+        if (res.type !== "move") return { bestMove: null, bestEvalWhite: 0, moveScores: [] };
+        return { bestMove: res.move, bestEvalWhite: res.score, moveScores: res.moveScores };
+      });
+    pendingAnalysisRef.current = { atHistoryLen: historyLenRef.current, promise };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameStarted, isOver, isLive, turn, state.board]);
+
+  // Grades whichever move was actually played against the pending analysis
+  // for the position it was played from, and records a badge once ready.
+  const classifyPlayedMove = useCallback((preMove: GameState, mover: Color, played: Move) => {
+    const pending = pendingAnalysisRef.current;
+    if (!pending) return;
+    const atHistoryLen = pending.atHistoryLen;
+    const myGen = analysisGenerationRef.current;
+    (async () => {
+      const client = aiClientRef.current;
+      if (!client) return;
+      const { bestMove, bestEvalWhite, moveScores } = await pending.promise;
+      if (!bestMove) return;
+      const annotation = await gradeMove(
+        client,
+        preMove.board,
+        mover,
+        preMove.castling,
+        preMove.enPassant,
+        played,
+        bestMove,
+        bestEvalWhite,
+        moveScores,
+      );
+      if (!annotation || analysisGenerationRef.current !== myGen) return;
+      setAnnotations((prev) => {
+        const next = [...prev];
+        next[atHistoryLen] = annotation;
+        return next;
+      });
+    })();
+  }, []);
+
+  // Grades every move of the current game sequentially in the background —
+  // triggered on demand (e.g. after importing a PGN) via the "Analyze Game"
+  // button, rather than automatically, since it's a lot of searching for a
+  // long game.
+  const [analysisProgress, setAnalysisProgress] = useState<{ done: number; total: number } | null>(null);
+  const runFullAnalysis = useCallback((entries: HistoryEntry[]) => {
+    const myGen = analysisGenerationRef.current;
+    setAnalysisProgress({ done: 0, total: entries.length });
+    (async () => {
+      let board = initialBoard();
+      let castling = defaultCastling();
+      let enPassant: [number, number] | null = null;
+      let turn: Color = "w";
+      for (let i = 0; i < entries.length; i++) {
+        if (analysisGenerationRef.current !== myGen) return;
+        const client = aiClientRef.current;
+        if (!client) return;
+        const entry = entries[i];
+        const res = await client.send({
+          type: "getMove",
+          board,
+          color: turn,
+          castling,
+          depth: ANALYSIS_LEVEL.depth,
+          enPassant,
+          timeLimitMs: ANALYSIS_LEVEL.maxTimeMs,
+        });
+        if (analysisGenerationRef.current === myGen && res.type === "move" && res.move) {
+          const annotation = await gradeMove(
+            client,
+            board,
+            turn,
+            castling,
+            enPassant,
+            entry.move,
+            res.move,
+            res.score,
+            res.moveScores,
+          );
+          if (annotation && analysisGenerationRef.current === myGen) {
+            setAnnotations((prev) => {
+              const next = [...prev];
+              next[i] = annotation;
+              return next;
+            });
+          }
+        }
+        board = entry.board;
+        castling = entry.castling;
+        enPassant = entry.enPassant;
+        turn = entry.turn;
+        if (analysisGenerationRef.current === myGen) {
+          setAnalysisProgress({ done: i + 1, total: entries.length });
+        }
+      }
+      if (analysisGenerationRef.current === myGen) {
+        setTimeout(() => setAnalysisProgress((p) => (p && p.done >= p.total ? null : p)), 1200);
+      }
+    })();
+  }, []);
+
+  // AI move-selection effect — decides what the AI actually plays, at its own
+  // configured difficulty. Deliberately a separate search from the grading
+  // analysis above (which always runs at the fixed ANALYSIS_LEVEL): the move
+  // the AI plays should reflect its configured strength, while the badge it
+  // gets graded with must not.
   useEffect(() => {
     if (!gameStarted || isOver || thinking) return;
     const isAiTurn = gameMode === "aiai" || turn !== playerColor;
     if (!isAiTurn) return;
 
     setState((s) => ({ ...s, thinking: true }));
-    const depth = LEVELS[turn === "w" ? levelIdxW : levelIdxB].depth;
-    const id = setTimeout(() => {
-      const s = stateRef.current;
-      const move = getAiMove(s.board, s.turn, s.castling, depth, s.enPassant);
-      if (!move) {
+    const level = LEVELS[turn === "w" ? levelIdxW : levelIdxB];
+    const id = setTimeout(async () => {
+      const client = aiClientRef.current;
+      if (!client) {
         setState((prev) => ({ ...prev, thinking: false }));
         return;
       }
-      const { state: newState, entry } = applyGameMove(
-        s,
-        move.from,
-        move.to,
-        [],
-      );
-      setState({ ...newState, thinking: false });
+      const s = stateRef.current;
+      const res = await client.send({
+        type: "getMove",
+        board: s.board,
+        color: s.turn,
+        castling: s.castling,
+        depth: level.depth,
+        enPassant: s.enPassant,
+        timeLimitMs: level.maxTimeMs,
+      });
+      if (res.type !== "move" || !res.move) {
+        setState((prev) => ({ ...prev, thinking: false }));
+        return;
+      }
+      const { state: newState, entry } = applyGameMove(s, res.move.from, res.move.to, []);
+      // Prefer the search's own evaluation (accounts for tactics) over the
+      // instant material-only estimate applyGameMove falls back to.
+      setState({ ...newState, evalScore: res.score, thinking: false });
       setHistory((h) => {
-        const nh = [...h, entry];
+        const nh = [...h, { ...entry, evalScore: res.score }];
         setViewIdx(nh.length - 1);
         return nh;
       });
+      classifyPlayedMove(s, s.turn, res.move);
     }, 400);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -223,6 +459,11 @@ export default function Home() {
   // Always-current ref so event handlers can read state without stale closures
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // Move-quality badge (Brilliant/Best/Blunder/…) for whatever move is
+  // currently being viewed (live or browsing history/replay), shown on its
+  // destination square by ChessBoard, chess.com style.
+  const currentAnnotation = viewIdx >= 0 ? annotations[viewIdx] ?? null : null;
 
   const toBoard = (dr: number, dc: number): [number, number] =>
     flipBoard ? [7 - dr, 7 - dc] : [dr, dc];
@@ -238,8 +479,9 @@ export default function Home() {
         setViewIdx(nh.length - 1);
         return nh;
       });
+      classifyPlayedMove(s, s.turn, { from, to });
     },
-    [],
+    [classifyPlayedMove],
   );
 
   const handleClick = useCallback(
@@ -357,7 +599,8 @@ export default function Home() {
     }
   };
 
-  const handleExportPGN = () => {
+  const [pgnCopied, setPgnCopied] = useState(false);
+  const handleCopyPGN = async () => {
     const pgn = toPGN(
       history.map((h) => h.san),
       {
@@ -367,13 +610,13 @@ export default function Home() {
         date: new Date().toISOString().slice(0, 10).replace(/-/g, "."),
       },
     );
-    const blob = new Blob([pgn], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "game.pgn";
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      await navigator.clipboard.writeText(pgn);
+      setPgnCopied(true);
+      setTimeout(() => setPgnCopied(false), 1500);
+    } catch (error) {
+      console.error("Copy to clipboard failed", error);
+    }
   };
 
   const evalScore = isLive
@@ -424,10 +667,15 @@ export default function Home() {
   const aiIsBlack = gameMode === "pvai" && playerColor === "w";
   const aiIsWhite = gameMode === "pvai" && playerColor === "b";
 
-  // When navigating, don't show selection highlights
+  // When navigating, don't show selection highlights, but do show the move
+  // that led to whatever position is currently being viewed.
   const displaySelected = isLive ? state.selected : null;
   const displayHighlights = isLive ? state.highlights : [];
-  const displayLastMoveFinal = isLive ? state.lastMove : null;
+  const displayLastMoveFinal = isLive
+    ? state.lastMove
+    : viewIdx >= 0
+      ? history[viewIdx].move
+      : null;
 
   const handleImportPGN = (pgn: string): string | null => {
     const result = replayPGN(pgn);
@@ -435,9 +683,12 @@ export default function Home() {
       return result.error;
     }
 
-    ttClear();
+    aiClientRef.current?.send({ type: "clear" });
+    pendingAnalysisRef.current = null;
+    analysisGenerationRef.current++;
+    setAnalysisProgress(null);
     gameCounted.current = false;
-    
+
     const finalStatus = gameStatus(result.board, result.turn, result.castling, result.enPassant);
     const finalEval = materialEval(result.board);
 
@@ -454,6 +705,7 @@ export default function Home() {
       evalScore: finalEval,
     });
     setHistory(result.history);
+    setAnnotations(new Array(result.history.length).fill(null));
     setViewIdx(result.history.length - 1);
     setBoardFlipped(gameMode === "pvai" && playerColor === "b");
     setGameStarted(true);
@@ -472,10 +724,14 @@ export default function Home() {
         levelIdxB={levelIdxB}
         setLevelIdxB={setLevelIdxB}
         onStart={() => {
-          ttClear();
+          aiClientRef.current?.send({ type: "clear" });
+          pendingAnalysisRef.current = null;
+          analysisGenerationRef.current++;
+          setAnalysisProgress(null);
           gameCounted.current = false;
           setState(freshState());
           setHistory([]);
+          setAnnotations([]);
           setViewIdx(-1);
           setBoardFlipped(gameMode === "pvai" && playerColor === "b");
           setGameStarted(true);
@@ -547,6 +803,7 @@ export default function Home() {
           selected={displaySelected}
           highlights={displayHighlights}
           lastMove={displayLastMoveFinal}
+          annotation={currentAnnotation}
           drag={isLive ? drag : null}
           arrows={isLive ? arrows : []}
           circles={isLive ? circles : []}
@@ -563,9 +820,13 @@ export default function Home() {
         {/* Move history panel */}
         <MoveHistory
           sans={history.map((h) => h.san)}
+          annotations={annotations}
           viewIdx={viewIdx}
           onNavigate={setViewIdx}
-          onExportPGN={handleExportPGN}
+          onCopyPGN={handleCopyPGN}
+          pgnCopied={pgnCopied}
+          onAnalyzeGame={() => runFullAnalysis(history)}
+          analysisProgress={analysisProgress}
           gameMode={gameMode}
           playerColor={playerColor}
           status={status}
@@ -632,8 +893,12 @@ export default function Home() {
         </button>
         <button
           onClick={() => {
+            pendingAnalysisRef.current = null;
+            analysisGenerationRef.current++;
+            setAnalysisProgress(null);
             setState(freshState());
             setHistory([]);
+            setAnnotations([]);
             setViewIdx(-1);
             setDrag(null);
             setArrows([]);

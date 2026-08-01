@@ -1,7 +1,7 @@
 import { applyMove, updateCastling, updateEnPassant } from "./board";
-import { materialEval, PIECE_VALUE } from "./eval";
+import { materialEval, pieceScore, PIECE_VALUE } from "./eval";
 import { allLegalMoves, isInCheck } from "./moves";
-import type { Board, Castling, Color, Move } from "./types";
+import type { Board, Castling, Color, Move, PieceType } from "./types";
 
 // positive = good for black (maximizer)
 function evaluate(board: Board): number {
@@ -65,6 +65,15 @@ function sortMoves(board: Board, moves: Move[], ply: number, ttMoveCode: number)
 }
 
 // ─── Zobrist hashing ─────────────────────────────────────────────────────────
+// Hash and material/PST score are threaded through the recursion and updated
+// incrementally (O(1) per move) instead of being recomputed from the full
+// 64-square board at every node. The old per-node recompute did a string
+// concat + Record lookup (`_ZOB[p.color + p.type][r][c]`) 64 times PER NODE —
+// by far the hottest cost in the tree, since it ran on every interior node,
+// not just leaves. Incremental updates also fold castling rights + en
+// passant square into the hash, which the old boardHash() silently omitted
+// (a latent TT-collision bug: two positions with identical pieces/turn but
+// different castling/en-passant rights hashed identically).
 
 function mulberry32(seed: number): () => number {
   let a = seed;
@@ -78,33 +87,158 @@ function mulberry32(seed: number): () => number {
 }
 
 const _rng = mulberry32(0xdeadbeef);
-const _CT: Record<string, number> = {
-  wK: 0,
-  wQ: 1,
-  wR: 2,
-  wB: 3,
-  wN: 4,
-  wP: 5,
-  bK: 6,
-  bQ: 7,
-  bR: 8,
-  bB: 9,
-  bN: 10,
-  bP: 11,
-};
-const _ZOB = Array.from({ length: 12 }, () =>
-  Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => _rng())),
-);
-const _ZOB_TURN = _rng();
 
-function boardHash(board: Board, maximizing: boolean): number {
-  let h = maximizing ? _ZOB_TURN : 0;
+// piece code: 0-5 = white K,Q,R,B,N,P; 6-11 = black K,Q,R,B,N,P
+const TYPE_IDX: Record<PieceType, number> = { K: 0, Q: 1, R: 2, B: 3, N: 4, P: 5 };
+function pieceCode(color: Color, type: PieceType): number {
+  return (color === "b" ? 6 : 0) + TYPE_IDX[type];
+}
+
+const zobPiece = new Uint32Array(12 * 64);
+for (let i = 0; i < zobPiece.length; i++) zobPiece[i] = _rng();
+const zobCastle = [_rng(), _rng(), _rng(), _rng()]; // wK, wQ, bK, bQ
+const zobEP = new Uint32Array(64);
+for (let i = 0; i < zobEP.length; i++) zobEP[i] = _rng();
+const zobTurn = _rng();
+
+function pieceHash(color: Color, type: PieceType, r: number, c: number): number {
+  return zobPiece[pieceCode(color, type) * 64 + (r * 8 + c)];
+}
+
+function fullHash(
+  board: Board,
+  castling: Castling,
+  enPassant: [number, number] | null,
+  blackToMove: boolean,
+): number {
+  let h = blackToMove ? zobTurn : 0;
   for (let r = 0; r < 8; r++)
     for (let c = 0; c < 8; c++) {
       const p = board[r][c];
-      if (p) h = (h ^ _ZOB[_CT[p.color + p.type]][r][c]) >>> 0;
+      if (p) h ^= pieceHash(p.color, p.type, r, c);
     }
-  return h;
+  if (castling.wK) h ^= zobCastle[0];
+  if (castling.wQ) h ^= zobCastle[1];
+  if (castling.bK) h ^= zobCastle[2];
+  if (castling.bQ) h ^= zobCastle[3];
+  if (enPassant) h ^= zobEP[enPassant[0] * 8 + enPassant[1]];
+  return h >>> 0;
+}
+
+// Contribution of a single piece to evaluate()'s black-positive scale.
+function contrib(type: PieceType, color: Color, r: number, c: number): number {
+  return pieceScore(type, r, c, color) * (color === "w" ? -1 : 1);
+}
+
+// Hash/score delta for applying (from → to) on `board` (pre-move), given the
+// already-computed post-move castling/en-passant rights. Must mirror
+// applyMove()/updateCastling()/updateEnPassant() in board.ts exactly.
+function hashAfterMove(
+  hash: number,
+  board: Board,
+  castling: Castling,
+  enPassant: [number, number] | null,
+  nc: Castling,
+  ne: [number, number] | null,
+  from: [number, number],
+  to: [number, number],
+): number {
+  const [fr, fc] = from,
+    [tr, tc] = to;
+  const moving = board[fr][fc]!;
+  const target = board[tr][tc];
+  let h = hash ^ zobTurn;
+
+  h ^= pieceHash(moving.color, moving.type, fr, fc);
+  if (target) h ^= pieceHash(target.color, target.type, tr, tc);
+
+  const isEnPassantCap = moving.type === "P" && fc !== tc && target === null;
+  if (isEnPassantCap) {
+    const capturedColor: Color = moving.color === "w" ? "b" : "w";
+    h ^= pieceHash(capturedColor, "P", fr, tc);
+  }
+
+  const isPromotion = moving.type === "P" && (tr === 0 || tr === 7);
+  h ^= pieceHash(moving.color, isPromotion ? "Q" : moving.type, tr, tc);
+
+  if (moving.type === "K" && Math.abs(tc - fc) === 2) {
+    const rookFromC = tc === 6 ? 7 : 0;
+    const rookToC = tc === 6 ? 5 : 3;
+    h ^= pieceHash(moving.color, "R", tr, rookFromC);
+    h ^= pieceHash(moving.color, "R", tr, rookToC);
+  }
+
+  if (castling.wK && !nc.wK) h ^= zobCastle[0];
+  if (castling.wQ && !nc.wQ) h ^= zobCastle[1];
+  if (castling.bK && !nc.bK) h ^= zobCastle[2];
+  if (castling.bQ && !nc.bQ) h ^= zobCastle[3];
+
+  if (enPassant) h ^= zobEP[enPassant[0] * 8 + enPassant[1]];
+  if (ne) h ^= zobEP[ne[0] * 8 + ne[1]];
+
+  return h >>> 0;
+}
+
+function evalAfterMove(
+  score: number,
+  board: Board,
+  from: [number, number],
+  to: [number, number],
+): number {
+  const [fr, fc] = from,
+    [tr, tc] = to;
+  const moving = board[fr][fc]!;
+  const target = board[tr][tc];
+  let s = score;
+
+  s -= contrib(moving.type, moving.color, fr, fc);
+  if (target) s -= contrib(target.type, target.color, tr, tc);
+
+  const isEnPassantCap = moving.type === "P" && fc !== tc && target === null;
+  if (isEnPassantCap) {
+    const capturedColor: Color = moving.color === "w" ? "b" : "w";
+    s -= contrib("P", capturedColor, fr, tc);
+  }
+
+  const isPromotion = moving.type === "P" && (tr === 0 || tr === 7);
+  s += contrib(isPromotion ? "Q" : moving.type, moving.color, tr, tc);
+
+  if (moving.type === "K" && Math.abs(tc - fc) === 2) {
+    const rookFromC = tc === 6 ? 7 : 0;
+    const rookToC = tc === 6 ? 5 : 3;
+    s -= contrib("R", moving.color, tr, rookFromC);
+    s += contrib("R", moving.color, tr, rookToC);
+  }
+
+  return s;
+}
+
+interface NextPos {
+  board: Board;
+  castling: Castling;
+  enPassant: [number, number] | null;
+  hash: number;
+  score: number;
+}
+
+// Single point of truth for "apply a move and update all derived state" —
+// used by the root loop, minimax, and quiescence alike so hash/score always
+// stay in sync with the board.
+function makeMove(
+  board: Board,
+  castling: Castling,
+  enPassant: [number, number] | null,
+  hash: number,
+  score: number,
+  from: [number, number],
+  to: [number, number],
+): NextPos {
+  const nb = applyMove(board, from, to);
+  const nc = updateCastling(castling, from, to);
+  const ne = updateEnPassant(board, from, to);
+  const nHash = hashAfterMove(hash, board, castling, enPassant, nc, ne, from, to);
+  const nScore = evalAfterMove(score, board, from, to);
+  return { board: nb, castling: nc, enPassant: ne, hash: nHash, score: nScore };
 }
 
 // ─── Transposition table — fixed-size parallel typed arrays ──────────────────
@@ -165,6 +299,22 @@ function ttStore(
   tt_move[i] = moveCode;
 }
 
+// ─── Time budget ──────────────────────────────────────────────────────────────
+// Iterative deepening can blow up combinatorially at high depth; without a
+// wall-clock cap a "Grandmaster" search can run for minutes and pin a core.
+// nodeCount is checked cheaply (every 2048 nodes) so aborting is near-instant
+// once the deadline passes, without paying a Date.now()-per-node cost.
+
+let deadline = Infinity;
+let aborted = false;
+let nodeCount = 0;
+
+function timeUp(): boolean {
+  nodeCount++;
+  if ((nodeCount & 2047) === 0 && performance.now() > deadline) aborted = true;
+  return aborted;
+}
+
 // ─── Quiescence search ────────────────────────────────────────────────────────
 // Delta pruning: if standPat + queen's value still can't reach alpha, skip.
 
@@ -174,11 +324,14 @@ function quiesce(
   board: Board,
   castling: Castling,
   enPassant: [number, number] | null,
+  hash: number,
+  score: number,
   alpha: number,
   beta: number,
   maximizing: boolean,
 ): number {
-  const pat = evaluate(board);
+  if (timeUp()) return score;
+  const pat = score;
 
   if (maximizing) {
     if (pat >= beta) return pat;
@@ -197,15 +350,22 @@ function quiesce(
 
   let best = pat;
   for (const m of caps) {
-    const nb = applyMove(board, m.from, m.to);
-    const nc = updateCastling(castling, m.from, m.to);
-    const ne = updateEnPassant(board, m.from, m.to);
-    const score = quiesce(nb, nc, ne, alpha, beta, !maximizing);
+    const next = makeMove(board, castling, enPassant, hash, score, m.from, m.to);
+    const s = quiesce(
+      next.board,
+      next.castling,
+      next.enPassant,
+      next.hash,
+      next.score,
+      alpha,
+      beta,
+      !maximizing,
+    );
     if (maximizing) {
-      if (score > best) best = score;
+      if (s > best) best = s;
       alpha = Math.max(alpha, best);
     } else {
-      if (score < best) best = score;
+      if (s < best) best = s;
       beta = Math.min(beta, best);
     }
     if (beta <= alpha) break;
@@ -219,6 +379,8 @@ function minimax(
   board: Board,
   castling: Castling,
   enPassant: [number, number] | null,
+  hash: number,
+  score: number,
   depth: number,
   alpha: number,
   beta: number,
@@ -226,10 +388,10 @@ function minimax(
   ply: number,
   allowNull: boolean,
 ): number {
+  if (timeUp()) return score;
   if (depth === 0)
-    return quiesce(board, castling, enPassant, alpha, beta, maximizing);
+    return quiesce(board, castling, enPassant, hash, score, alpha, beta, maximizing);
 
-  const hash = boardHash(board, maximizing);
   const cached = ttProbe(hash, depth, alpha, beta);
   if (cached !== null) return cached;
 
@@ -245,6 +407,8 @@ function minimax(
       board,
       castling,
       enPassant,
+      hash ^ zobTurn,
+      score,
       depth - 1 - R,
       alpha,
       beta,
@@ -269,9 +433,7 @@ function minimax(
 
   for (let i = 0; i < moves.length; i++) {
     const m = moves[i];
-    const nb = applyMove(board, m.from, m.to);
-    const nc = updateCastling(castling, m.from, m.to);
-    const ne = updateEnPassant(board, m.from, m.to);
+    const next = makeMove(board, castling, enPassant, hash, score, m.from, m.to);
     const isCapture = board[m.to[0]][m.to[1]] !== null;
 
     // Late Move Reduction ─────────────────────────────────────────────────────
@@ -279,10 +441,12 @@ function minimax(
     const doLMR =
       !inCheck && i >= 4 && depth >= 3 && !isCapture && !isKiller(m, ply);
 
-    let score = minimax(
-      nb,
-      nc,
-      ne,
+    let s = minimax(
+      next.board,
+      next.castling,
+      next.enPassant,
+      next.hash,
+      next.score,
       doLMR ? depth - 2 : depth - 1,
       alpha,
       beta,
@@ -291,11 +455,13 @@ function minimax(
       true,
     );
 
-    if (doLMR && (maximizing ? score > alpha : score < beta))
-      score = minimax(
-        nb,
-        nc,
-        ne,
+    if (doLMR && (maximizing ? s > alpha : s < beta))
+      s = minimax(
+        next.board,
+        next.castling,
+        next.enPassant,
+        next.hash,
+        next.score,
         depth - 1,
         alpha,
         beta,
@@ -305,14 +471,14 @@ function minimax(
       );
 
     if (maximizing) {
-      if (score > best) {
-        best = score;
+      if (s > best) {
+        best = s;
         bestMove = m;
       }
       if (best > alpha) alpha = best;
     } else {
-      if (score < best) {
-        best = score;
+      if (s < best) {
+        best = s;
         bestMove = m;
       }
       if (best < beta) beta = best;
@@ -336,26 +502,60 @@ function minimax(
 
 // ─── Root search: iterative deepening + aspiration windows ───────────────────
 
+export interface AiMoveScore {
+  from: [number, number];
+  to: [number, number];
+  // White-positive pawn units. Only the top move's score is exact — other
+  // root moves may be alpha/beta bounds (from the aspiration window), so
+  // treat these as a rough signal (e.g. "is there a big gap to the 2nd best
+  // move"), not as precise per-move evaluations.
+  score: number;
+}
+
+export interface AiResult {
+  move: Move | null;
+  // Search evaluation of the resulting position, white-positive pawn units —
+  // same scale/sign as materialEval, but reflects the actual search (tactics
+  // included) rather than a snapshot of material only.
+  score: number;
+  // Every root move considered at the last fully-searched depth, see AiMoveScore's caveat.
+  moveScores: AiMoveScore[];
+}
+
 export function getAiMove(
   board: Board,
   color: Color,
   castling: Castling,
   depth = 3,
   enPassant: [number, number] | null = null,
-): Move | null {
+  timeLimitMs = Infinity,
+): AiResult {
   killers.fill(0);
   histTable.fill(0);
+  deadline = performance.now() + timeLimitMs;
+  aborted = false;
+  nodeCount = 0;
 
   let moves = allLegalMoves(board, color, castling, enPassant);
-  if (!moves.length) return null;
+  if (!moves.length) {
+    // No legal moves: checkmate favors whoever isn't stuck, stalemate is flat.
+    if (!isInCheck(board, color)) return { move: null, score: 0, moveScores: [] };
+    return { move: null, score: color === "b" ? 9999 : -9999, moveScores: [] };
+  }
 
   moves.sort((a, b) => captureScore(board, b) - captureScore(board, a));
 
   const maximizing = color === "b";
+  const rootHash = fullHash(board, castling, enPassant, maximizing);
+  const rootScore = evaluate(board);
   let bestMove = moves[0];
   let prevScore = 0;
+  let lastIterMoves: Move[] = moves;
+  let lastIterScores: number[] = new Array(moves.length).fill(0);
 
   for (let d = 1; d <= depth; d++) {
+    if (aborted) break; // out of time — keep the last fully-searched depth's move
+
     // Aspiration window: start with ±0.5 pawn around last iteration's score.
     // Widen to full window on failure (rare at shallow depth, effective at deeper).
     let aspAlpha = d >= 3 ? prevScore - 0.5 : -Infinity;
@@ -371,13 +571,13 @@ export function getAiMove(
 
       for (let i = 0; i < moves.length; i++) {
         const m = moves[i];
-        const nb = applyMove(board, m.from, m.to);
-        const nc = updateCastling(castling, m.from, m.to);
-        const ne = updateEnPassant(board, m.from, m.to);
+        const next = makeMove(board, castling, enPassant, rootHash, rootScore, m.from, m.to);
         const score = minimax(
-          nb,
-          nc,
-          ne,
+          next.board,
+          next.castling,
+          next.enPassant,
+          next.hash,
+          next.score,
           d - 1,
           aspAlpha,
           aspBeta,
@@ -403,11 +603,14 @@ export function getAiMove(
       break;
     }
 
+    if (aborted) break; // this iteration timed out mid-search — discard its results
+
     prevScore = dBest;
     bestMove = dBestMove;
+    lastIterMoves = moves;
+    lastIterScores = scores;
 
-    const hash = boardHash(board, maximizing);
-    ttStore(hash, d, prevScore, 0, encMove(bestMove));
+    ttStore(rootHash, d, prevScore, 0, encMove(bestMove));
 
     // Re-sort root moves for next depth using this iteration's scores
     const indexed = moves.map((m, i) => ({ m, s: scores[i] }));
@@ -415,5 +618,52 @@ export function getAiMove(
     moves = indexed.map((x) => x.m);
   }
 
-  return bestMove;
+  // evaluate()/minimax operate on a black-positive scale; flip to white-positive.
+  const moveScores: AiMoveScore[] = lastIterMoves.map((m, i) => ({
+    from: m.from,
+    to: m.to,
+    score: -lastIterScores[i],
+  }));
+  return { move: bestMove, score: -prevScore, moveScores };
+}
+
+// ─── Single-move evaluation ───────────────────────────────────────────────────
+// Exact evaluation (full window, not aspiration-bounded) of one specific
+// move, used to score a move that wasn't the engine's own top pick (e.g. a
+// human's move) for annotation purposes — getAiMove()'s per-root-move scores
+// are too imprecise for that (see AiMoveScore).
+
+export function evaluateMove(
+  board: Board,
+  color: Color,
+  castling: Castling,
+  move: Move,
+  depth: number,
+  enPassant: [number, number] | null = null,
+  timeLimitMs = Infinity,
+): number {
+  killers.fill(0);
+  histTable.fill(0);
+  deadline = performance.now() + timeLimitMs;
+  aborted = false;
+  nodeCount = 0;
+
+  const maximizing = color === "b";
+  const hash = fullHash(board, castling, enPassant, maximizing);
+  const score = evaluate(board);
+  const next = makeMove(board, castling, enPassant, hash, score, move.from, move.to);
+  const result = minimax(
+    next.board,
+    next.castling,
+    next.enPassant,
+    next.hash,
+    next.score,
+    Math.max(depth - 1, 0),
+    -Infinity,
+    Infinity,
+    !maximizing,
+    1,
+    true,
+  );
+  return -result;
 }

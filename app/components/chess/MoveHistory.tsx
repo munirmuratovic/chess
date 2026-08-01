@@ -1,11 +1,16 @@
 import { useEffect, useRef } from 'react';
 import type { GameMode, Color, GameStatus } from '../../chess/types';
+import type { MoveAnnotation } from '../../chess/annotate';
 
 interface MoveHistoryProps {
   sans: string[];
+  annotations?: (MoveAnnotation | null)[];
   viewIdx: number;           // index into sans; -1 = start position
   onNavigate: (idx: number) => void;
-  onExportPGN: () => void;
+  onCopyPGN: () => void;
+  pgnCopied?: boolean;
+  onAnalyzeGame?: () => void;
+  analysisProgress?: { done: number; total: number } | null;
   gameMode: GameMode;
   playerColor: Color;
   status: GameStatus;
@@ -14,9 +19,13 @@ interface MoveHistoryProps {
 
 export function MoveHistory({
   sans,
+  annotations,
   viewIdx,
   onNavigate,
-  onExportPGN,
+  onCopyPGN,
+  pgnCopied,
+  onAnalyzeGame,
+  analysisProgress,
   totalMoves,
 }: MoveHistoryProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
@@ -42,13 +51,32 @@ export function MoveHistory({
       <div className="px-3 py-2 border-b border-gray-700 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Moves</span>
         <button
-          onClick={onExportPGN}
+          onClick={onCopyPGN}
           className="text-xs text-amber-500 hover:text-amber-300 transition-colors font-semibold"
-          title="Export PGN"
+          title="Copy PGN to clipboard"
         >
-          Export PGN
+          {pgnCopied ? "Copied!" : "Copy PGN"}
         </button>
       </div>
+
+      {/* Analyze game — runs move-quality classification (Brilliant/Best/…) over the whole game */}
+      {onAnalyzeGame && (
+        <div className="px-3 py-1.5 border-b border-gray-800">
+          <button
+            onClick={onAnalyzeGame}
+            disabled={totalMoves === 0 || !!analysisProgress}
+            className="w-full text-xs font-semibold py-1 rounded transition-colors
+              bg-sky-700/30 text-sky-300 hover:bg-sky-700/50
+              disabled:opacity-40 disabled:cursor-default disabled:hover:bg-sky-700/30"
+          >
+            {analysisProgress
+              ? analysisProgress.done >= analysisProgress.total
+                ? "Analysis complete"
+                : `Analyzing… ${analysisProgress.done}/${analysisProgress.total}`
+              : "🔍 Analyze Game"}
+          </button>
+        </div>
+      )}
 
       {/* Navigation controls */}
       <div className="flex items-center justify-between px-2 py-1.5 border-b border-gray-800">
@@ -76,6 +104,7 @@ export function MoveHistory({
                     <td className="py-1 pr-1">
                       <MoveCell
                         san={white}
+                        annotation={annotations?.[wIdx] ?? null}
                         active={isActive(wIdx)}
                         ref={isActive(wIdx) ? activeRef : undefined}
                         onClick={() => onNavigate(wIdx)}
@@ -85,6 +114,7 @@ export function MoveHistory({
                       {black !== undefined && (
                         <MoveCell
                           san={black}
+                          annotation={annotations?.[bIdx] ?? null}
                           active={isActive(bIdx)}
                           ref={isActive(bIdx) ? activeRef : undefined}
                           onClick={() => onNavigate(bIdx)}
@@ -128,16 +158,28 @@ function NavBtn({
 }
 
 const MoveCell = ({
-  san, active, onClick, ref,
-}: { san: string; active: boolean; onClick: () => void; ref?: React.Ref<HTMLButtonElement> }) => (
+  san, annotation, active, onClick, ref,
+}: {
+  san: string;
+  annotation: MoveAnnotation | null;
+  active: boolean;
+  onClick: () => void;
+  ref?: React.Ref<HTMLButtonElement>;
+}) => (
   <button
     ref={ref}
     onClick={onClick}
-    className={`w-full text-left px-2 py-0.5 rounded font-mono transition-colors
+    title={annotation?.label}
+    className={`w-full text-left px-2 py-0.5 rounded font-mono transition-colors flex items-center gap-1
       ${active
         ? 'bg-amber-700 text-white'
         : 'text-gray-300 hover:bg-gray-700 hover:text-white'}`}
   >
-    {san}
+    <span>{san}</span>
+    {annotation && (
+      <span className={`text-xs font-bold ${active ? 'text-white' : annotation.colorClass}`}>
+        {annotation.icon}
+      </span>
+    )}
   </button>
 );

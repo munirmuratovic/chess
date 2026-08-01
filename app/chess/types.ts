@@ -33,10 +33,12 @@ export interface Score {
 export interface Level {
   label: string;
   depth: number;
+  maxTimeMs: number;
 }
 
 export interface HistoryEntry {
   san: string;
+  move: Move;
   board: Board;
   castling: Castling;
   enPassant: [number, number] | null;

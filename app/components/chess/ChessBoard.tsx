@@ -1,4 +1,5 @@
 import type { Board, Color } from '../../chess/types';
+import type { MoveAnnotation } from '../../chess/annotate';
 import { ARROW_COLOR, ARROW_SW, HEAD_HALF, HEAD_LEN, SQ } from './constants';
 
 interface ChessBoardProps {
@@ -6,6 +7,7 @@ interface ChessBoardProps {
   selected: [number, number] | null;
   highlights: [number, number][];
   lastMove: { from: [number, number]; to: [number, number] } | null;
+  annotation?: MoveAnnotation | null; // move-quality badge for lastMove.to, chess.com style
   drag: { r: number; c: number; x: number; y: number } | null;
   arrows: Array<[[number, number], [number, number]]>;
   circles: Array<[number, number]>;
@@ -20,7 +22,7 @@ interface ChessBoardProps {
 }
 
 export function ChessBoard({
-  board, selected, highlights, lastMove, drag,
+  board, selected, highlights, lastMove, annotation, drag,
   arrows, circles, flipBoard, isHumanTurn, playerColor,
   boardRef, onClick, onPointerDown, onRightMouseDown, onRightMouseUp,
 }: ChessBoardProps) {
@@ -144,6 +146,43 @@ export function ChessBoard({
           );
         })}
       </svg>
+
+      {/* Move-quality badge on the destination square, chess.com style */}
+      {annotation && lastMove && (() => {
+        const [tr, tc] = lastMove.to;
+        const ddr = flipBoard ? 7 - tr : tr;
+        const ddc = flipBoard ? 7 - tc : tc;
+        const size = SQ * 0.42;
+        return (
+          <div
+            key={`${tr}${tc}${annotation.class}`}
+            title={annotation.label}
+            className="move-badge-pop"
+            style={{
+              position: 'absolute',
+              left: ddc * SQ + SQ - size * 0.62,
+              top: ddr * SQ - size * 0.12,
+              width: size,
+              height: size,
+              borderRadius: '50%',
+              backgroundColor: annotation.bgColor,
+              border: '2px solid rgba(255,255,255,0.9)',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.5)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 30,
+              pointerEvents: 'none',
+              color: 'white',
+              fontWeight: 800,
+              fontSize: size * 0.5,
+              lineHeight: 1,
+            }}
+          >
+            {annotation.icon}
+          </div>
+        );
+      })()}
     </div>
   );
 }
