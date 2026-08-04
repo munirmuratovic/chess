@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react';
 import type { GameMode, Color, GameStatus } from '../../chess/types';
-import type { MoveAnnotation } from '../../chess/annotate';
+import type { MoveAnnotation, MoveClass } from '../../chess/annotate';
+
+// Display order for the post-analysis summary, best to worst.
+const CLASS_ORDER: MoveClass[] = [
+  'brilliant', 'great', 'best', 'excellent', 'good', 'inaccuracy', 'mistake', 'blunder',
+];
 
 interface MoveHistoryProps {
   sans: string[];
@@ -15,6 +20,8 @@ interface MoveHistoryProps {
   playerColor: Color;
   status: GameStatus;
   totalMoves: number;        // sans.length alias, avoids prop drilling
+  highlightsOnly: boolean;   // when true, only show board badges for brilliant/great/blunder
+  onHighlightsOnlyChange: (v: boolean) => void;
 }
 
 export function MoveHistory({
@@ -27,6 +34,8 @@ export function MoveHistory({
   onAnalyzeGame,
   analysisProgress,
   totalMoves,
+  highlightsOnly,
+  onHighlightsOnlyChange,
 }: MoveHistoryProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
 
@@ -76,6 +85,20 @@ export function MoveHistory({
               : "🔍 Analyze Game"}
           </button>
         </div>
+      )}
+
+      {/* Highlights-only filter — restricts the on-board badge to brilliant/great/blunder moves; the list below always shows every move */}
+      {annotations && annotations.some(Boolean) && (
+        <label className="flex items-center gap-1.5 px-3 py-1.5 border-b border-gray-800 text-xs text-gray-400 hover:text-gray-200 cursor-pointer select-none transition-colors">
+          <input
+            type="checkbox"
+            checked={highlightsOnly}
+            onChange={(e) => onHighlightsOnlyChange(e.target.checked)}
+            className="accent-cyan-500 w-3.5 h-3.5"
+          />
+          Highlights only on board
+          <span className="text-gray-600">(!!, !, ??)</span>
+        </label>
       )}
 
       {/* Navigation controls */}
@@ -129,6 +152,20 @@ export function MoveHistory({
         )}
       </div>
 
+      {/* Analysis summary — counts once finished, progress while running */}
+      {(analysisProgress || annotations?.some(Boolean)) && (
+        <div className="px-3 py-2 border-t border-gray-800">
+          {analysisProgress && analysisProgress.done < analysisProgress.total ? (
+            <div className="flex items-center gap-1.5 text-xs text-sky-300">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+              Analyzing… {analysisProgress.done}/{analysisProgress.total}
+            </div>
+          ) : (
+            <MoveSummary annotations={annotations ?? []} />
+          )}
+        </div>
+      )}
+
       {/* Live indicator */}
       {!isLive && totalMoves > 0 && (
         <button
@@ -138,6 +175,46 @@ export function MoveHistory({
           ↓ Back to live
         </button>
       )}
+    </div>
+  );
+}
+
+function MoveSummary({ annotations }: { annotations: (MoveAnnotation | null)[] }) {
+  const byClass = new Map<MoveClass, { count: number; sample: MoveAnnotation }>();
+  for (const a of annotations) {
+    if (!a) continue;
+    const entry = byClass.get(a.class);
+    if (entry) entry.count++;
+    else byClass.set(a.class, { count: 1, sample: a });
+  }
+  if (byClass.size === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+      {CLASS_ORDER.filter((cls) => byClass.has(cls)).map((cls) => {
+        const { count, sample } = byClass.get(cls)!;
+        return (
+          <div key={cls} className="flex items-center gap-1 text-xs text-gray-300" title={sample.label}>
+            <span
+              className="inline-flex items-center justify-center rounded-full font-bold shrink-0"
+              style={{
+                width: 15,
+                height: 15,
+                fontSize: 9,
+                lineHeight: 1,
+                color: 'white',
+                background: sample.gradient,
+                border: `1px solid ${sample.ring}`,
+                boxShadow: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 1px rgba(255,255,255,0.3)',
+                textShadow: '0 1px 1px rgba(0,0,0,0.4)',
+              }}
+            >
+              {sample.icon}
+            </span>
+            {count}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -170,14 +247,27 @@ const MoveCell = ({
     ref={ref}
     onClick={onClick}
     title={annotation?.label}
-    className={`w-full text-left px-2 py-0.5 rounded font-mono transition-colors flex items-center gap-1
+    className={`w-full text-left px-2 py-0.5 rounded font-mono transition-colors flex items-center gap-1.5
       ${active
         ? 'bg-amber-700 text-white'
         : 'text-gray-300 hover:bg-gray-700 hover:text-white'}`}
   >
     <span>{san}</span>
     {annotation && (
-      <span className={`text-xs font-bold ${active ? 'text-white' : annotation.colorClass}`}>
+      <span
+        className="inline-flex items-center justify-center rounded-full font-bold shrink-0"
+        style={{
+          width: 15,
+          height: 15,
+          fontSize: 9,
+          lineHeight: 1,
+          color: 'white',
+          background: annotation.gradient,
+          border: `1px solid ${active ? 'rgba(255,255,255,0.6)' : annotation.ring}`,
+          boxShadow: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 1px rgba(255,255,255,0.3)',
+          textShadow: '0 1px 1px rgba(0,0,0,0.4)',
+        }}
+      >
         {annotation.icon}
       </span>
     )}

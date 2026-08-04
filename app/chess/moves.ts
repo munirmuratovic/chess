@@ -166,30 +166,37 @@ export function pseudoMoves(board: Board, r: number, c: number, enPassant?: [num
   return out;
 }
 
-export function isInCheck(board: Board, color: Color): boolean {
-  let kr = -1, kc = -1;
+function findKing(board: Board, color: Color): [number, number] | null {
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       const p = board[r][c];
-      if (p?.type === 'K' && p.color === color) {
-        kr = r;
-        kc = c;
-        break;
-      }
+      if (p?.type === 'K' && p.color === color) return [r, c];
     }
-    if (kr !== -1) break;
   }
-  if (kr === -1) return false;
+  return null;
+}
+
+export function isInCheck(board: Board, color: Color): boolean {
+  const king = findKing(board, color);
+  if (!king) return false;
   const opp = color === 'w' ? 'b' : 'w';
-  return isSquareAttacked(board, kr, kc, opp);
+  return isSquareAttacked(board, king[0], king[1], opp);
 }
 
 export function legalMoves(board: Board, r: number, c: number, castling?: Castling, enPassant?: [number, number] | null): [number, number][] {
   const piece = board[r][c];
   if (!piece) return [];
-  const moves = pseudoMoves(board, r, c, enPassant).filter(([tr, tc]) =>
-    !isInCheck(applyMove(board, [r, c], [tr, tc]), piece.color)
-  );
+  // King position is the same for every candidate move except when the king
+  // itself is the piece moving — find it once instead of rescanning the
+  // whole board inside isInCheck for every pseudo-move (this runs at every
+  // search node, so it adds up fast).
+  const opp = piece.color === 'w' ? 'b' : 'w';
+  const staticKingPos = piece.type === 'K' ? null : findKing(board, piece.color);
+  const moves = pseudoMoves(board, r, c, enPassant).filter(([tr, tc]) => {
+    const after = applyMove(board, [r, c], [tr, tc]);
+    const king = staticKingPos ?? [tr, tc];
+    return !isSquareAttacked(after, king[0], king[1], opp);
+  });
   if (piece.type === 'K' && castling && !isInCheck(board, piece.color)) {
     const { color } = piece;
     const row = color === 'w' ? 7 : 0;

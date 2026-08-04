@@ -141,7 +141,7 @@ export function SetupScreen({
               }}
               className="w-full py-1.5 bg-amber-700 hover:bg-amber-600 active:bg-amber-800 text-white font-bold rounded-lg text-xs transition-colors shadow-md"
             >
-              Import & Start Game
+              Load PGN
             </button>
           </div>
         )}
