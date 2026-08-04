@@ -38,10 +38,22 @@ export function MoveHistory({
   onHighlightsOnlyChange,
 }: MoveHistoryProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll active move into view
+  // Auto-scroll active move into view — scrolled manually within the list's
+  // own container rather than via scrollIntoView, which walks up every
+  // scrollable ancestor (including the page itself) and was yanking the
+  // whole mobile viewport around after every move.
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const el = activeRef.current;
+    const container = listRef.current;
+    if (!el || !container) return;
+    const elTop = el.offsetTop;
+    const elBottom = elTop + el.offsetHeight;
+    const viewTop = container.scrollTop;
+    const viewBottom = viewTop + container.clientHeight;
+    if (elTop < viewTop) container.scrollTop = elTop;
+    else if (elBottom > viewBottom) container.scrollTop = elBottom - container.clientHeight;
   }, [viewIdx]);
 
   // Pair moves into rows: [[w, b?], ...]
@@ -53,8 +65,8 @@ export function MoveHistory({
   const isLive = viewIdx === totalMoves - 1;
 
   return (
-    <div className="flex flex-col bg-gray-900 border border-gray-700 rounded-xl overflow-hidden"
-      style={{ width: 220, minHeight: 200 }}>
+    <div className="flex flex-col bg-gray-900 border border-gray-700 rounded-xl overflow-hidden w-full md:w-[220px]"
+      style={{ maxWidth: 420, minHeight: 200 }}>
 
       {/* Header */}
       <div className="px-3 py-2 border-b border-gray-700 flex items-center justify-between">
@@ -110,7 +122,7 @@ export function MoveHistory({
       </div>
 
       {/* Move list */}
-      <div className="flex-1 overflow-y-auto" style={{ maxHeight: 400 }}>
+      <div ref={listRef} className="flex-1 overflow-y-auto" style={{ maxHeight: 400 }}>
         {rows.length === 0 ? (
           <p className="text-gray-600 text-xs text-center py-6">No moves yet</p>
         ) : (

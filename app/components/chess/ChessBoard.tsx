@@ -1,11 +1,12 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { Board, Color } from '../../chess/types';
 import type { MoveAnnotation } from '../../chess/annotate';
-import { ARROW_COLOR, ARROW_SW, HEAD_HALF, HEAD_LEN, SQ } from './constants';
+import { ARROW_COLOR, arrowGeometry } from './constants';
 
 const MOVE_ANIM_MS = 180;
 
 interface ChessBoardProps {
+  sq: number; // current square size in px — responsive, see useSquareSize()
   board: Board;
   selected: [number, number] | null;
   highlights: [number, number][];
@@ -33,12 +34,13 @@ interface ChessBoardProps {
 }
 
 export function ChessBoard({
-  board, selected, highlights, lastMove, annotation, drag,
+  sq: SQ, board, selected, highlights, lastMove, annotation, drag,
   arrows, circles, flipBoard, isHumanTurn, playerColor,
   boardRef, onClick, onPointerDown, onRightMouseDown, onRightMouseUp,
   annotatedArrow, animateMove,
 }: ChessBoardProps) {
   const annotatedArrowColor = annotatedArrow?.color ?? ARROW_COLOR;
+  const { arrowSw: ARROW_SW, headLen: HEAD_LEN, headHalf: HEAD_HALF } = arrowGeometry(SQ);
 
   // Slide animation: on a new (non-silent) lastMove, briefly render the moved
   // piece as a floating ghost that glides from `from` to `to`, while hiding

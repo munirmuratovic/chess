@@ -28,7 +28,7 @@ import { LevelSelector } from "../components/chess/LevelSelector";
 import { MoveHistory } from "../components/chess/MoveHistory";
 import { Scoreboard } from "../components/chess/Scoreboard";
 import { SetupScreen } from "../components/chess/SetupScreen";
-import { LEVELS, SQ } from "../components/chess/constants";
+import { LEVELS, useSquareSize } from "../components/chess/constants";
 
 interface GameState {
   board: Board;
@@ -190,6 +190,7 @@ export function meta() {
 }
 
 export default function Home() {
+  const SQ = useSquareSize();
   const [gameMode, setGameMode] = useState<GameMode>("pvai");
   const [playerColor, setPlayerColor] = useState<Color>("w");
   const [gameStarted, setGameStarted] = useState(false);
@@ -893,7 +894,7 @@ export default function Home() {
         setLevelIdxB={setLevelIdxB}
         onStart={() => {
           aiClientRef.current?.send({ type: "clear" });
-    gradingClientRef.current?.send({ type: "clear" });
+          gradingClientRef.current?.send({ type: "clear" });
           pendingAnalysisRef.current = null;
           analysisGenerationRef.current++;
           setAnalysisProgress(null);
@@ -965,78 +966,81 @@ export default function Home() {
         </div>
       )}
 
-      <div className="flex items-start gap-3">
-        {/* Eval bar */}
-        <div
-          className="flex flex-col items-center gap-1"
-          style={{ height: SQ * 8 }}
-        >
+      <div className="flex flex-col md:flex-row items-center md:items-start gap-3">
+        <div className="flex items-start gap-3">
+          {/* Eval bar */}
           <div
-            style={{
-              width: 18,
-              height: SQ * 8,
-              borderRadius: 6,
-              overflow: "hidden",
-              border: "1px solid #374151",
-              position: "relative",
-            }}
+            className="flex flex-col items-center gap-1"
+            style={{ height: SQ * 8 }}
           >
             <div
               style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                right: 0,
-                height: `${blackPct}%`,
-                backgroundColor: "#1c1c1c",
-                transition: "height 0.4s ease",
+                width: 18,
+                height: SQ * 8,
+                borderRadius: 6,
+                overflow: "hidden",
+                border: "1px solid #374151",
+                position: "relative",
               }}
-            />
-            <div
-              style={{
-                position: "absolute",
-                bottom: 0,
-                left: 0,
-                right: 0,
-                height: `${whitePct}%`,
-                backgroundColor: "#f0ead8",
-                transition: "height 0.4s ease",
-              }}
-            />
+            >
+              <div
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: `${blackPct}%`,
+                  backgroundColor: "#1c1c1c",
+                  transition: "height 0.4s ease",
+                }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  height: `${whitePct}%`,
+                  backgroundColor: "#f0ead8",
+                  transition: "height 0.4s ease",
+                }}
+              />
+            </div>
+            <span className="text-xs text-gray-400 font-mono mt-1">
+              {evalLabel}
+            </span>
           </div>
-          <span className="text-xs text-gray-400 font-mono mt-1">
-            {evalLabel}
-          </span>
-        </div>
 
-        <ChessBoard
-          board={displayBoard}
-          selected={displaySelected}
-          highlights={displayHighlights}
-          lastMove={displayLastMoveFinal}
-          annotation={currentAnnotation}
-          animateMove={animateMove}
-          drag={isLive ? drag : null}
-          arrows={isLive ? arrows : []}
-          circles={isLive ? circles : []}
-          annotatedArrow={
-            displayLastMoveFinal
-              ? {
-                  from: displayLastMoveFinal.from,
-                  to: displayLastMoveFinal.to,
-                  color: rawCurrentAnnotation?.bgColor ?? null,
-                }
-              : null
-          }
-          flipBoard={flipBoard}
-          isHumanTurn={isHumanTurn}
-          playerColor={playerColor}
-          boardRef={boardRef}
-          onClick={handleClick}
-          onPointerDown={handlePointerDown}
-          onRightMouseDown={handleRightMouseDown}
-          onRightMouseUp={handleRightMouseUp}
-        />
+          <ChessBoard
+            sq={SQ}
+            board={displayBoard}
+            selected={displaySelected}
+            highlights={displayHighlights}
+            lastMove={displayLastMoveFinal}
+            annotation={currentAnnotation}
+            animateMove={animateMove}
+            drag={isLive ? drag : null}
+            arrows={isLive ? arrows : []}
+            circles={isLive ? circles : []}
+            annotatedArrow={
+              displayLastMoveFinal
+                ? {
+                    from: displayLastMoveFinal.from,
+                    to: displayLastMoveFinal.to,
+                    color: rawCurrentAnnotation?.bgColor ?? null,
+                  }
+                : null
+            }
+            flipBoard={flipBoard}
+            isHumanTurn={isHumanTurn}
+            playerColor={playerColor}
+            boardRef={boardRef}
+            onClick={handleClick}
+            onPointerDown={handlePointerDown}
+            onRightMouseDown={handleRightMouseDown}
+            onRightMouseUp={handleRightMouseUp}
+          />
+        </div>
 
         {/* Move history panel */}
         <MoveHistory
@@ -1107,17 +1111,17 @@ export default function Home() {
         ) : null}
       </div>
 
-      <div className="flex gap-3">
+      <div className="flex flex-wrap justify-center gap-2 sm:gap-3 px-2">
         <button
           onClick={() => setBoardFlipped(f => !f)}
-          className="px-6 py-2 bg-gray-800 hover:bg-gray-700 active:bg-gray-900 border border-gray-700 text-white font-semibold rounded-lg transition-colors text-sm flex items-center gap-1.5"
+          className="px-4 sm:px-6 py-2 bg-gray-800 hover:bg-gray-700 active:bg-gray-900 border border-gray-700 text-white font-semibold rounded-lg transition-colors text-sm flex items-center gap-1.5"
         >
           🔄 Flip Board
         </button>
         {gameMode === "pvai" && !isOver && gameStarted && (
           <button
             onClick={() => setResignedBy(playerColor)}
-            className="px-6 py-2 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-200 font-semibold rounded-lg transition-colors text-sm flex items-center gap-1.5"
+            className="px-4 sm:px-6 py-2 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-200 font-semibold rounded-lg transition-colors text-sm flex items-center gap-1.5"
           >
             🏳 Resign
           </button>
@@ -1137,7 +1141,7 @@ export default function Home() {
             setResignedBy(null);
             setGameStarted(false);
           }}
-          className="px-6 py-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-white font-semibold rounded-lg transition-colors text-sm"
+          className="px-4 sm:px-6 py-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-white font-semibold rounded-lg transition-colors text-sm"
         >
           New Game
         </button>
