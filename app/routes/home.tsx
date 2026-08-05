@@ -7,8 +7,8 @@ import {
   updateEnPassant,
 } from "../chess/board";
 import { gameStatus, legalMoves } from "../chess/moves";
-import { materialEval } from "../chess/eval";
-import { toPGN, toSAN, replayPGN } from "../chess/notation";
+import { materialEval, computeCaptured } from "../chess/eval";
+import { toPGN, toSAN, replayPGN, type PGNPlayers } from "../chess/notation";
 import { createAiClient, type AiClient } from "../chess/aiClient";
 import type { AiMoveScore } from "../chess/search";
 import { classifyMove, HIGHLIGHT_CLASSES, RESIGNATION_ANNOTATION, type MoveAnnotation } from "../chess/annotate";
@@ -21,6 +21,7 @@ import type {
   GameStatus,
   HistoryEntry,
   Move,
+  PieceType,
   Score,
 } from "../chess/types";
 import { ChessBoard } from "../components/chess/ChessBoard";
@@ -29,6 +30,26 @@ import { MoveHistory } from "../components/chess/MoveHistory";
 import { Scoreboard } from "../components/chess/Scoreboard";
 import { SetupScreen } from "../components/chess/SetupScreen";
 import { LEVELS, useSquareSize } from "../components/chess/constants";
+
+const CAPTURED_GLYPH: Record<Color, Record<PieceType, string>> = {
+  w: { K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘", P: "♙" },
+  b: { K: "♚", Q: "♛", R: "♜", B: "♝", N: "♞", P: "♟" },
+};
+
+// Small row of captured-piece glyphs shown next to each player's name, chess.com
+// style — `pieces` are the opponent's pieces this side has taken, `color` is
+// the captured pieces' own original color (so they render as e.g. black
+// silhouettes under White's name).
+function CapturedTray({ pieces, color }: { pieces: PieceType[]; color: Color }) {
+  if (!pieces.length) return null;
+  return (
+    <span className="flex items-center -space-x-1 text-sm leading-none text-gray-400" title={pieces.join(", ")}>
+      {pieces.map((t, i) => (
+        <span key={i}>{CAPTURED_GLYPH[color][t]}</span>
+      ))}
+    </span>
+  );
+}
 
 interface GameState {
   board: Board;
@@ -234,6 +255,8 @@ export default function Home() {
     : viewIdx === -1
       ? initialBoard()
       : history[viewIdx].board;
+
+  const captured = computeCaptured(displayBoard);
 
   const flipBoard = boardFlipped;
   // Only allow human moves when live and it's their turn
@@ -542,6 +565,7 @@ export default function Home() {
         depth: level.depth,
         enPassant: s.enPassant,
         timeLimitMs: level.maxTimeMs,
+        styled: level.styled,
       });
       if (res.type !== "move" || !res.move) {
         setState((prev) => ({ ...prev, thinking: false }));
@@ -713,6 +737,7 @@ export default function Home() {
   };
 
   const [pgnCopied, setPgnCopied] = useState(false);
+  const [pgnPlayers, setPgnPlayers] = useState<PGNPlayers | null>(null);
   const handleCopyPGN = async () => {
     const pgn = toPGN(
       history.map((h) => h.san),
@@ -872,6 +897,7 @@ export default function Home() {
       evalScore: finalEval,
     });
     setHistory(result.history);
+    setPgnPlayers(result.players ?? null);
     setAnnotations(new Array(result.history.length).fill(null));
     setViewIdx(result.history.length - 1);
     setBoardFlipped(gameMode === "pvai" && playerColor === "b");
@@ -902,6 +928,7 @@ export default function Home() {
           setState(freshState());
           setHistory([]);
           setAnnotations([]);
+          setPgnPlayers(null);
           setViewIdx(-1);
           setBoardFlipped(gameMode === "pvai" && playerColor === "b");
           setAwaitingPgnChoice(false);
@@ -1008,6 +1035,35 @@ export default function Home() {
             </div>
             <span className="text-xs text-gray-400 font-mono mt-1">
               {evalLabel}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between text-xs text-gray-300 font-semibold px-1 mb-1" style={{ width: SQ * 8 }}>
+            <span className="flex items-center gap-1.5 flex-wrap">
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-gray-100 border border-gray-500 shrink-0" />
+              {pgnPlayers ? (
+                <>
+                  {pgnPlayers.white ?? "White"}
+                  {pgnPlayers.whiteElo && <span className="text-gray-500 font-normal">({pgnPlayers.whiteElo})</span>}
+                </>
+              ) : (
+                "White"
+              )}
+              <CapturedTray pieces={captured.byWhite} color="b" />
+              {captured.diff > 0 && <span className="text-emerald-400 font-mono">+{captured.diff}</span>}
+            </span>
+            <span className="flex items-center gap-1.5 flex-wrap justify-end">
+              {captured.diff < 0 && <span className="text-emerald-400 font-mono">+{-captured.diff}</span>}
+              <CapturedTray pieces={captured.byBlack} color="w" />
+              {pgnPlayers ? (
+                <>
+                  {pgnPlayers.blackElo && <span className="text-gray-500 font-normal">({pgnPlayers.blackElo})</span>}
+                  {pgnPlayers.black ?? "Black"}
+                </>
+              ) : (
+                "Black"
+              )}
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-gray-900 border border-gray-500 shrink-0" />
             </span>
           </div>
 

@@ -96,13 +96,37 @@ export function toPGN(sans: string[], meta: PGNMeta): string {
   return header + '\n\n' + moves.join(' ') + ' ' + meta.result;
 }
 
+export interface PGNPlayers {
+  white?: string;
+  black?: string;
+  whiteElo?: string;
+  blackElo?: string;
+}
+
 export interface ReplayedGame {
   board: Board;
   castling: Castling;
   enPassant: [number, number] | null;
   turn: Color;
   history: HistoryEntry[];
+  players?: PGNPlayers;
   error?: string;
+}
+
+function parsePGNTag(pgn: string, tag: string): string | undefined {
+  const m = pgn.match(new RegExp(`\\[${tag}\\s+"([^"]*)"\\]`, 'i'));
+  const v = m?.[1]?.trim();
+  return v && v !== '?' && v !== '' ? v : undefined;
+}
+
+function parsePGNPlayers(pgn: string): PGNPlayers | undefined {
+  const players: PGNPlayers = {
+    white: parsePGNTag(pgn, 'White'),
+    black: parsePGNTag(pgn, 'Black'),
+    whiteElo: parsePGNTag(pgn, 'WhiteElo'),
+    blackElo: parsePGNTag(pgn, 'BlackElo'),
+  };
+  return Object.values(players).some(Boolean) ? players : undefined;
 }
 
 function norm(san: string): string {
@@ -116,6 +140,8 @@ function norm(san: string): string {
 }
 
 export function replayPGN(pgn: string): ReplayedGame {
+  const players = parsePGNPlayers(pgn);
+
   // Remove headers
   let moveText = pgn.replace(/\[[^\]]*\]/g, ' ');
   // Remove comments and RAVs
@@ -181,6 +207,7 @@ export function replayPGN(pgn: string): ReplayedGame {
         enPassant,
         turn,
         history,
+        players,
         error: `Could not parse move ${i + 1}: "${token}"`
       };
     }
@@ -215,6 +242,7 @@ export function replayPGN(pgn: string): ReplayedGame {
     castling,
     enPassant,
     turn,
-    history
+    history,
+    players
   };
 }

@@ -127,7 +127,7 @@ function sameMove(a: Move, b: Move): boolean {
 // Rough "does this look like a sacrifice" check: the piece lands on a square
 // the opponent attacks, and it's worth clearly more than whatever (if
 // anything) it just captured there.
-function looksLikeSacrifice(board: Board, color: Color, move: Move): boolean {
+export function looksLikeSacrifice(board: Board, color: Color, move: Move): boolean {
   const piece = board[move.from[0]][move.from[1]];
   if (!piece || piece.type === "P" || piece.type === "K") return false;
   const opp: Color = color === "w" ? "b" : "w";

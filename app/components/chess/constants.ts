@@ -51,6 +51,10 @@ export const LEVELS: Level[] = [
   { label: 'Expert',      depth: 7,  maxTimeMs: 4_000 },
   { label: 'Master',      depth: 9,  maxTimeMs: 6_000 },
   { label: 'Grandmaster', depth: 11, maxTimeMs: 9_000 },
+  // Pushes the same search (no external engine, no opening book) further than
+  // "Grandmaster" purely on depth/time budget, for testing whether raw deeper
+  // minimax search finds moves a human GM misses.
+  { label: 'Brilliant',   depth: 14, maxTimeMs: 20_000, styled: true },
 ];
 
 export const ARROW_COLOR = 'rgba(80, 152, 210, 0.82)';

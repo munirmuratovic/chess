@@ -1,4 +1,5 @@
 import { applyMove, updateCastling, updateEnPassant } from "./board";
+import { looksLikeSacrifice } from "./annotate";
 import { materialEval, pieceScore, PIECE_VALUE } from "./eval";
 import { allLegalMoves, isInCheck } from "./moves";
 import type { Board, Castling, Color, Move, PieceType } from "./types";
@@ -666,4 +667,59 @@ export function evaluateMove(
     true,
   );
   return -result;
+}
+
+// ─── Styled move selection ────────────────────────────────────────────────────
+// Same search as getAiMove, but among moves that are essentially tied for
+// best (within EPS), prefers whichever would earn the flashiest annotate.ts
+// badge: brilliant > great > best > good. This never sacrifices strength —
+// the candidate pool is always near-best-eval moves — it just breaks ties in
+// favor of the most "brilliant"-looking win instead of move-list order.
+const STYLE_EPS = 0.05; // pawns; matches moveScores' per-root-move imprecision
+
+export function getStyledAiMove(
+  board: Board,
+  color: Color,
+  castling: Castling,
+  depth = 3,
+  enPassant: [number, number] | null = null,
+  timeLimitMs = Infinity,
+): AiResult {
+  const result = getAiMove(board, color, castling, depth, enPassant, timeLimitMs);
+  if (!result.move || result.moveScores.length <= 1) return result;
+
+  const sign = color === "w" ? 1 : -1;
+  const candidates = result.moveScores.map((ms) => ({
+    move: { from: ms.from, to: ms.to } as Move,
+    evalX: ms.score * sign,
+  }));
+  const bestEval = Math.max(...candidates.map((c) => c.evalX));
+  const nearBest = candidates.filter((c) => c.evalX >= bestEval - STYLE_EPS);
+  const secondBestEval = Math.max(
+    -Infinity,
+    ...candidates.filter((c) => c.evalX < bestEval - STYLE_EPS).map((c) => c.evalX),
+  );
+
+  const pick = (pool: typeof candidates) =>
+    pool.reduce((a, b) => (b.evalX > a.evalX ? b : a));
+
+  const brilliant = nearBest.filter(
+    (c) => c.evalX > 1.5 && looksLikeSacrifice(board, color, c.move),
+  );
+  if (brilliant.length) return { ...result, move: pick(brilliant).move };
+
+  if (bestEval - secondBestEval > 1.5) {
+    return { ...result, move: pick(nearBest).move };
+  }
+
+  if (nearBest.some((c) => sameMove(c.move, result.move!))) return result;
+
+  const good = candidates.filter((c) => bestEval - c.evalX <= 0.4);
+  if (good.length) return { ...result, move: pick(good).move };
+
+  return result;
+}
+
+function sameMove(a: Move, b: Move): boolean {
+  return a.from[0] === b.from[0] && a.from[1] === b.from[1] && a.to[0] === b.to[0] && a.to[1] === b.to[1];
 }

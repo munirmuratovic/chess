@@ -34,6 +34,10 @@ export interface Level {
   label: string;
   depth: number;
   maxTimeMs: number;
+  // When true, among near-best-eval root moves the AI prefers whichever
+  // would earn the flashiest annotate.ts badge (brilliant > great > best),
+  // instead of just the first-found top move. Never trades away strength.
+  styled?: boolean;
 }
 
 export interface HistoryEntry {

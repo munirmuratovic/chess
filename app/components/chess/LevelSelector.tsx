@@ -21,8 +21,12 @@ export function LevelSelector({ label, levelIdx, setLevelIdx, disabled }: LevelS
             disabled={disabled}
             className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-semibold transition-colors
               ${i === levelIdx
-                ? 'bg-amber-700 text-white'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'}
+                ? lvl.styled
+                  ? 'bg-cyan-700 text-white'
+                  : 'bg-amber-700 text-white'
+                : lvl.styled
+                  ? 'bg-gray-800 text-cyan-400 hover:bg-gray-700 hover:text-cyan-200'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'}
               ${i > 0 ? 'border-l border-gray-700' : ''}`}
           >
             {lvl.label}

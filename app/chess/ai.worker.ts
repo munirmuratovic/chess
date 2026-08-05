@@ -1,4 +1,4 @@
-import { getAiMove, evaluateMove, ttClear, type AiMoveScore } from "./search";
+import { getAiMove, getStyledAiMove, evaluateMove, ttClear, type AiMoveScore } from "./search";
 import type { Board, Castling, Color, Move } from "./types";
 
 export type AiWorkerRequest =
@@ -10,6 +10,7 @@ export type AiWorkerRequest =
       depth: number;
       enPassant: [number, number] | null;
       timeLimitMs: number;
+      styled?: boolean;
     }
   | {
       type: "evaluateMove";
@@ -58,7 +59,8 @@ self.onmessage = (e) => {
     return;
   }
 
-  const { move, score, moveScores } = getAiMove(
+  const getMove = msg.styled ? getStyledAiMove : getAiMove;
+  const { move, score, moveScores } = getMove(
     msg.board,
     msg.color,
     msg.castling,

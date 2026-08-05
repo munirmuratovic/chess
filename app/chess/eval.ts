@@ -91,3 +91,70 @@ export function materialEval(board: Board): number {
     }
   return score;
 }
+
+const STARTING_COUNTS: Record<PieceType, number> = { P: 8, N: 2, B: 2, R: 2, Q: 1, K: 1 };
+
+export interface CapturedPieces {
+  // Pieces white has captured (i.e. missing from black's original set).
+  byWhite: PieceType[];
+  // Pieces black has captured (i.e. missing from white's original set).
+  byBlack: PieceType[];
+  // White material minus black material, in points (positive favors white).
+  diff: number;
+}
+
+// Derived from the board's current piece counts rather than tracked move-by-
+// move, so it stays correct across undo/PGN-import/history navigation for
+// free — no need to thread capture events through every code path that
+// mutates the board.
+export function computeCaptured(board: Board): CapturedPieces {
+  const counts: Record<Color, Record<PieceType, number>> = {
+    w: { P: 0, N: 0, B: 0, R: 0, Q: 0, K: 0 },
+    b: { P: 0, N: 0, B: 0, R: 0, Q: 0, K: 0 },
+  };
+  for (const row of board)
+    for (const p of row) if (p) counts[p.color][p.type]++;
+
+  // Pawn promotion swaps a pawn for e.g. a queen without any capture
+  // happening, so per-type count deltas alone would report a phantom
+  // "captured pawn" whenever either side has promoted. Total piece count per
+  // side IS capture-accurate (promotion doesn't change it), so use that as
+  // the ground truth for how many pieces each side actually lost, and only
+  // use the per-type deltas to guess *which* types — trimming away the
+  // lowest-value (pawn-first) phantom entries introduced by promotions.
+  const totalWhite = Object.values(counts.w).reduce((a, b) => a + b, 0);
+  const totalBlack = Object.values(counts.b).reduce((a, b) => a + b, 0);
+  const actualBlackLost = 16 - totalBlack; // real pieces captured by white
+  const actualWhiteLost = 16 - totalWhite; // real pieces captured by black
+
+  const byValueDesc = (a: PieceType, b: PieceType) => PIECE_VALUE[b] - PIECE_VALUE[a];
+  const byValueAsc = (a: PieceType, b: PieceType) => PIECE_VALUE[a] - PIECE_VALUE[b];
+
+  let byWhite: PieceType[] = [];
+  let byBlack: PieceType[] = [];
+  for (const type of Object.keys(STARTING_COUNTS) as PieceType[]) {
+    const missingBlack = Math.max(0, STARTING_COUNTS[type] - counts.b[type]);
+    const missingWhite = Math.max(0, STARTING_COUNTS[type] - counts.w[type]);
+    for (let i = 0; i < missingBlack; i++) byWhite.push(type);
+    for (let i = 0; i < missingWhite; i++) byBlack.push(type);
+  }
+  // Trim phantom entries from promotions: drop lowest-value first (pawns).
+  byWhite.sort(byValueAsc);
+  byWhite = byWhite.slice(byWhite.length - actualBlackLost);
+  byBlack.sort(byValueAsc);
+  byBlack = byBlack.slice(byBlack.length - actualWhiteLost);
+  // Display order: queen first, pawns last (chess.com convention).
+  byWhite.sort(byValueDesc);
+  byBlack.sort(byValueDesc);
+
+  // Exact material diff, promotion-safe (sum of current piece values, not
+  // count-deltas): equivalent to materialEval() without the PST term.
+  let whiteValue = 0, blackValue = 0;
+  for (const type of Object.keys(STARTING_COUNTS) as PieceType[]) {
+    whiteValue += counts.w[type] * PIECE_VALUE[type];
+    blackValue += counts.b[type] * PIECE_VALUE[type];
+  }
+  const diff = whiteValue - blackValue;
+
+  return { byWhite, byBlack, diff };
+}
