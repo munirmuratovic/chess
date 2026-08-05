@@ -6,7 +6,7 @@ import {
   updateCastling,
   updateEnPassant,
 } from "../chess/board";
-import { gameStatus, legalMoves } from "../chess/moves";
+import { gameStatus, legalMoves, positionKey } from "../chess/moves";
 import { materialEval, computeCaptured } from "../chess/eval";
 import { toPGN, toSAN, replayPGN, type PGNPlayers } from "../chess/notation";
 import { createAiClient, type AiClient } from "../chess/aiClient";
@@ -91,7 +91,11 @@ function applyGameMove(
   const nc = updateCastling(s.castling, from, to);
   const ne = updateEnPassant(s.board, from, to);
   const nextTurn: Color = s.turn === "w" ? "b" : "w";
-  const nextStatus = gameStatus(nb, nextTurn, nc, ne);
+  const priorPositionKeys = [
+    positionKey(initialBoard(), "w", defaultCastling(), null),
+    ...history.map((h) => positionKey(h.board, h.turn, h.castling, h.enPassant)),
+  ];
+  const nextStatus = gameStatus(nb, nextTurn, nc, ne, priorPositionKeys);
   const nextEval = materialEval(nb);
 
   const newState: GameState = {
@@ -125,7 +129,7 @@ function resultFromStatus(
   status: GameStatus,
   turn: Color,
 ): "*" | "1-0" | "0-1" | "1/2-1/2" {
-  if (status === "stalemate") return "1/2-1/2";
+  if (status === "stalemate" || status === "draw") return "1/2-1/2";
   if (status === "checkmate") return turn === "w" ? "0-1" : "1-0";
   return "*";
 }
@@ -240,13 +244,15 @@ export default function Home() {
   const [resignedBy, setResignedBy] = useState<Color | null>(null);
   const historyLenRef = useRef(0);
   historyLenRef.current = history.length;
+  const historyRef = useRef<HistoryEntry[]>(history);
+  historyRef.current = history;
   // Bumped on every full reset (new game / PGN import) so any in-flight
   // analysis from a previous game can recognize it's stale and bail out
   // instead of writing its result into the new game's annotations.
   const analysisGenerationRef = useRef(0);
 
   const { turn, selected, status, thinking } = state;
-  const isOver = status === "checkmate" || status === "stalemate" || resignedBy !== null;
+  const isOver = status === "checkmate" || status === "stalemate" || status === "draw" || resignedBy !== null;
   const isLive = viewIdx === history.length - 1 || history.length === 0;
 
   // Displayed board: historical snapshot when navigating, live board otherwise
@@ -312,7 +318,7 @@ export default function Home() {
           ? { ...s, white: s.white + 1 }
           : { ...s, black: s.black + 1 };
       }
-      if (status === "stalemate") return { ...s, draws: s.draws + 1 };
+      if (status === "stalemate" || status === "draw") return { ...s, draws: s.draws + 1 };
       const winner: Color = turn === "w" ? "b" : "w";
       return winner === "w"
         ? { ...s, white: s.white + 1 }
@@ -571,7 +577,7 @@ export default function Home() {
         setState((prev) => ({ ...prev, thinking: false }));
         return;
       }
-      const { state: newState, entry } = applyGameMove(s, res.move.from, res.move.to, []);
+      const { state: newState, entry } = applyGameMove(s, res.move.from, res.move.to, historyRef.current);
       // Prefer the search's own evaluation (accounts for tactics) over the
       // instant material-only estimate applyGameMove falls back to.
       setState({ ...newState, evalScore: res.score, thinking: false });
@@ -609,7 +615,7 @@ export default function Home() {
     (from: [number, number], to: [number, number], silent = false) => {
       const s = stateRef.current;
       if (!s.board[from[0]][from[1]]) return;
-      const { state: newState, entry } = applyGameMove(s, from, to, [], silent);
+      const { state: newState, entry } = applyGameMove(s, from, to, historyRef.current, silent);
       setState(newState);
       setHistory((h) => {
         const nh = [...h, entry];
@@ -779,6 +785,7 @@ export default function Home() {
         : "Checkmate — You win!";
     }
     if (status === "stalemate") return "Stalemate — Draw!";
+    if (status === "draw") return "Threefold Repetition — Draw!";
     if (gameMode === "aiai") {
       const side = turn === "w" ? "White" : "Black";
       return status === "check"

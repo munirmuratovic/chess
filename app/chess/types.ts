@@ -21,7 +21,7 @@ export interface Castling {
   bQ: boolean;
 }
 
-export type GameStatus = 'playing' | 'check' | 'checkmate' | 'stalemate';
+export type GameStatus = 'playing' | 'check' | 'checkmate' | 'stalemate' | 'draw';
 export type GameMode = 'pvai' | 'aiai';
 
 export interface Score {

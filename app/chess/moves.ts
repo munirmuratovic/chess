@@ -226,8 +226,34 @@ export function allLegalMoves(board: Board, color: Color, castling?: Castling, e
   return moves;
 }
 
-export function gameStatus(board: Board, color: Color, castling?: Castling, enPassant?: [number, number] | null): GameStatus {
+// Identifies a position for threefold-repetition purposes: piece placement,
+// side to move, castling rights, and en-passant target square (per the
+// standard repetition rule — not just the raw board).
+export function positionKey(board: Board, color: Color, castling?: Castling, enPassant?: [number, number] | null): string {
+  const boardStr = board.map(row => row.map(sq => sq ? `${sq.color}${sq.type}` : '.').join('')).join('/');
+  const castlingStr = castling ? `${castling.wK ? 'K' : ''}${castling.wQ ? 'Q' : ''}${castling.bK ? 'k' : ''}${castling.bQ ? 'q' : ''}` : '';
+  const epStr = enPassant ? `${enPassant[0]},${enPassant[1]}` : '-';
+  return `${boardStr}|${color}|${castlingStr}|${epStr}`;
+}
+
+export function isThreefoldRepetition(positionKeys: string[], latestKey: string): boolean {
+  let count = 0;
+  for (const key of positionKeys) if (key === latestKey) count++;
+  return count >= 3;
+}
+
+export function gameStatus(
+  board: Board,
+  color: Color,
+  castling?: Castling,
+  enPassant?: [number, number] | null,
+  priorPositionKeys?: string[],
+): GameStatus {
   const moves = allLegalMoves(board, color, castling, enPassant);
   if (moves.length === 0) return isInCheck(board, color) ? 'checkmate' : 'stalemate';
+  if (priorPositionKeys) {
+    const key = positionKey(board, color, castling, enPassant);
+    if (isThreefoldRepetition(priorPositionKeys, key)) return 'draw';
+  }
   return isInCheck(board, color) ? 'check' : 'playing';
 }
